@@ -2,9 +2,16 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ANSIBLE_DIR="${ROOT_DIR}/ansible"
-COMMON_LIB="${ROOT_DIR}/scripts/lib/ansible-common.sh"
-LOCAL_KWEAVER_CORE_INSTALL="${ROOT_DIR}/scripts/install-kweaver-core-only-local.sh"
+if [[ -d "${ROOT_DIR}/ansible" ]]; then
+  DEPLOY_ASSET_DIR="${ROOT_DIR}"
+elif [[ -d "${ROOT_DIR}/deploy_package/ansible" ]]; then
+  DEPLOY_ASSET_DIR="${ROOT_DIR}/deploy_package"
+else
+  DEPLOY_ASSET_DIR="${ROOT_DIR}"
+fi
+ANSIBLE_DIR="${DEPLOY_ASSET_DIR}/ansible"
+COMMON_LIB="${DEPLOY_ASSET_DIR}/scripts/lib/ansible-common.sh"
+LOCAL_KWEAVER_CORE_INSTALL="${DEPLOY_ASSET_DIR}/scripts/install-kweaver-core-only-local.sh"
 DEPLOYMENT_PROFILE="full"
 INVENTORY_PATH="${ANSIBLE_DIR}/inventory.ini"
 LOCAL_MODE="false"
