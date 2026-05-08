@@ -15,12 +15,13 @@ config:
   rabbitmqExchange: conversation.agent.events
   rabbitmqExchangeType: direct
   rabbitmqQueue: core_agent.conversation.events.v1
-  kweaverBaseUrl: {{ effective_kweaver_runtime_base_url | to_json }}
+  kweaverBaseUrl: {{ (effective_kweaver_runtime_base_url | default(kweaver_internal_base_url | default(kweaver_runtime_base_url | default('')), true)) | to_json }}
   kweaverDecisionAgentId: {{ backup_agent_id | to_json }}
   kweaverBusinessDomain: bd_public
   kweaverTimeout: 30
   kweaverTlsInsecure: true
   kweaverProbeOnStartup: false
+  foundationEndpoint: {{ core_agent_foundation_endpoint_effective | default(core_agent_service.foundation.endpoint | default(foundation.endpoint | default(''), true), true) | to_json }}
   coreAgentLogLevel: INFO
   coreAgentLogToStdout: true
   coreAgentLogFile: ""
@@ -31,6 +32,8 @@ secrets:
   databaseUrl: {{ v9_runtime.postgres_sync_url | to_json }}
   rabbitmqUrl: {{ v9_runtime.rabbitmq_url | to_json }}
   kweaverToken: {{ kweaver_token | to_json }}
+  foundationAk: {{ core_agent_foundation_ak_effective | default(core_agent_service.foundation.ak | default('', true), true) | to_json }}
+  foundationSk: {{ core_agent_foundation_sk_effective | default(core_agent_service.foundation.sk | default('', true), true) | to_json }}
 
 resources:
   requests:

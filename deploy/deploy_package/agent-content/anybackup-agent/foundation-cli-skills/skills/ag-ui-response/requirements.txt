@@ -1,0 +1,2 @@
+# Publish path dependency for RabbitMQ delivery.
+aio-pika>=9.5.0

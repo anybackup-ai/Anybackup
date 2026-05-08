@@ -114,6 +114,9 @@ Environment variables:
   VEGA_BUSINESS_DOMAIN
   KWEAVER_BUSINESS_DOMAIN
   VEGA_SKIP_CATALOG
+  KWEAVER_SKIP_DATA_VIEWS or VEGA_SKIP_DATA_VIEWS
+                      Skip KWeaver datasource/dataview creation. Keep this enabled
+                      for KWeaver Core-only installs that do not include Etrino.
 
 Notes:
   1. The installer creates the target database if the account has permission.

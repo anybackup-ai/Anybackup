@@ -1,274 +1,65 @@
 ---
-- name: Check Kubernetes API availability
-  ansible.builtin.command: kubectl get nodes
-  register: k8s_api_check
-  changed_when: false
-  failed_when: false
-
-- name: Check helm command availability
-  ansible.builtin.command: which helm
-  register: k8s_helm_check
-  changed_when: false
-  failed_when: false
-
-- name: Install helm when missing
+- name: Detect existing Kubernetes cluster
   ansible.builtin.shell: |
     set -euo pipefail
-    if [ -f "{{ package_root }}/bin/helm" ]; then
-      install -m 0755 "{{ package_root }}/bin/helm" /usr/local/bin/helm
-      exit 0
-    fi
-    if command -v dnf >/dev/null 2>&1; then
-      dnf install -y helm && exit 0
-    fi
-    arch="$(uname -m)"
-    case "${arch}" in
-      x86_64|amd64) arch=amd64 ;;
-      aarch64|arm64) arch=arm64 ;;
-      *) echo "Unsupported helm arch: ${arch}" >&2; exit 1 ;;
-    esac
-    tmp_dir="$(mktemp -d)"
-    trap 'rm -rf "${tmp_dir}"' EXIT
-    curl -fsSL "https://get.helm.sh/helm-{{ k8s_cluster.helm_version }}-linux-${arch}.tar.gz" -o "${tmp_dir}/helm.tar.gz"
-    tar -C "${tmp_dir}" -xzf "${tmp_dir}/helm.tar.gz"
-    install -m 0755 "${tmp_dir}/linux-${arch}/helm" /usr/local/bin/helm
+    command -v kubectl >/dev/null 2>&1
+    kubectl get nodes -o name
   args:
     executable: /bin/bash
-  when: k8s_helm_check.rc != 0
-
-- name: Check kubeadm command availability
-  ansible.builtin.command: which kubeadm
-  register: k8s_kubeadm_check
+  register: k8s_cluster_nodes_before
   changed_when: false
   failed_when: false
 
-- name: Assert kubeadm and kubectl exist
-  ansible.builtin.assert:
-    that:
-      - k8s_kubeadm_check.rc == 0
-    fail_msg: "kubeadm is required to bootstrap Kubernetes on this host."
-
-- name: Resolve Kubernetes advertise address
+- name: Resolve Kubernetes cluster presence
   ansible.builtin.set_fact:
-    k8s_advertise_address: >-
-      {{
-        (ansible_host | default('', true))
-        or ((ansible_default_ipv4.address) if (ansible_default_ipv4 is defined and ansible_default_ipv4.address is defined) else '')
-      }}
+    k8s_cluster_present_before: "{{ k8s_cluster_nodes_before.rc == 0 and (k8s_cluster_nodes_before.stdout | trim | length > 0) }}"
 
-- name: Prepare kernel settings for Kubernetes
-  ansible.builtin.shell: |
-    set -euo pipefail
-    modprobe overlay || true
-    modprobe br_netfilter || true
-    cat >/etc/modules-load.d/k8s.conf <<'EOF'
-    overlay
-    br_netfilter
-    EOF
-    cat >/etc/sysctl.d/99-kubernetes-cri.conf <<'EOF'
-    net.bridge.bridge-nf-call-iptables = 1
-    net.bridge.bridge-nf-call-ip6tables = 1
-    net.ipv4.ip_forward = 1
-    EOF
-    sysctl --system >/dev/null
-    swapoff -a || true
-  args:
-    executable: /bin/bash
+- name: Print Kubernetes cluster reuse summary
+  ansible.builtin.debug:
+    msg:
+      - "Kubernetes cluster already present: {{ k8s_cluster_present_before }}"
+      - "Existing nodes: {{ k8s_cluster_nodes_before.stdout_lines | default([]) | join(', ') if k8s_cluster_present_before else 'none' }}"
+  when: k8s_cluster_present_before
 
-- name: Ensure container runtime and kubelet are enabled
-  ansible.builtin.shell: |
-    set -euo pipefail
-    systemctl enable --now containerd
-    systemctl enable --now kubelet || true
-  args:
-    executable: /bin/bash
-
-- name: Check loopback CNI plugin
-  ansible.builtin.stat:
-    path: /opt/cni/bin/loopback
-  register: k8s_loopback_cni
-
-- name: Install Kubernetes CNI plugins when loopback is missing
-  ansible.builtin.shell: |
-    set -euo pipefail
-    if command -v dnf >/dev/null 2>&1; then
-      dnf install -y kubernetes-cni containernetworking-plugins || dnf install -y kubernetes-cni
-    elif command -v yum >/dev/null 2>&1; then
-      yum install -y kubernetes-cni containernetworking-plugins || yum install -y kubernetes-cni
-    else
-      echo "No supported package manager found to install CNI plugins" >&2
-      exit 1
-    fi
-  args:
-    executable: /bin/bash
-  when: not k8s_loopback_cni.stat.exists
-
-- name: Assert loopback CNI plugin exists
-  ansible.builtin.stat:
-    path: /opt/cni/bin/loopback
-  register: k8s_loopback_cni_after
-
-- name: Stop when loopback CNI plugin is still missing
+- name: Stop when Kubernetes is absent and no bootstrap command is configured
   ansible.builtin.assert:
     that:
-      - k8s_loopback_cni_after.stat.exists
-    fail_msg: "Missing /opt/cni/bin/loopback. Kubernetes pods cannot start without base CNI plugins."
+      - k8s_cluster.bootstrap_command | default('') | length > 0
+    fail_msg: >-
+      Kubernetes is not usable on the target host, and k8s_cluster.bootstrap_command
+      is empty. Configure k8s_cluster_bootstrap_command for this OS/environment, or
+      bootstrap Kubernetes manually before running the integrated deployment.
+  when: not k8s_cluster_present_before
 
-- name: Initialize single-node Kubernetes cluster when absent
+- name: Bootstrap Kubernetes when absent and explicitly configured
+  ansible.builtin.shell: "{{ k8s_cluster.bootstrap_command }}"
+  args:
+    executable: /bin/bash
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length > 0
+
+- name: Verify Kubernetes cluster after bootstrap or reuse
   ansible.builtin.command:
     argv:
-      - kubeadm
-      - init
-      - "--apiserver-advertise-address={{ k8s_advertise_address }}"
-      - "--pod-network-cidr={{ k8s_cluster.pod_cidr }}"
-      - "--service-cidr={{ k8s_cluster.service_cidr }}"
-      - --cri-socket
-      - unix:///run/containerd/containerd.sock
-      - --ignore-preflight-errors=Swap,SystemVerification
-  when: k8s_api_check.rc != 0
+      - kubectl
+      - get
+      - nodes
+      - -o
+      - wide
+  register: k8s_cluster_nodes_after
+  changed_when: false
 
-- name: Ensure root kubeconfig directory exists
-  ansible.builtin.file:
-    path: /root/.kube
-    state: directory
-    mode: "0700"
-
-- name: Check kubeadm admin kubeconfig
-  ansible.builtin.stat:
-    path: /etc/kubernetes/admin.conf
-  register: k8s_admin_conf
-
-- name: Install root kubeconfig
-  ansible.builtin.copy:
-    src: /etc/kubernetes/admin.conf
-    dest: /root/.kube/config
-    remote_src: true
-    mode: "0600"
-  when: k8s_admin_conf.stat.exists
-
-- name: Allow workloads on single control-plane node
+- name: Verify Kubernetes has Ready nodes
   ansible.builtin.shell: |
     set -euo pipefail
-    kubectl taint nodes --all node-role.kubernetes.io/control-plane- >/dev/null 2>&1 || true
-    kubectl taint nodes --all node-role.kubernetes.io/master- >/dev/null 2>&1 || true
+    ready_count="$(kubectl get nodes --no-headers | awk '$2 ~ /Ready/ {count++} END {print count+0}')"
+    test "$ready_count" -gt 0
   args:
     executable: /bin/bash
   changed_when: false
+  when: k8s_cluster.require_ready_nodes | default(true) | bool
 
-- name: Check flannel daemonset
-  ansible.builtin.command: kubectl get ds kube-flannel-ds -n kube-flannel
-  register: k8s_flannel_check
-  changed_when: false
-  failed_when: false
-
-- name: Install flannel CNI when missing
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - apply
-      - -f
-      - "{{ k8s_cluster.flannel_manifest_url }}"
-  when: k8s_flannel_check.rc != 0
-
-- name: Wait for flannel daemonset rollout
-  ansible.builtin.command: kubectl rollout status ds/kube-flannel-ds -n kube-flannel --timeout=300s
-  changed_when: false
-
-- name: Check local-path StorageClass
-  ansible.builtin.command: kubectl get storageclass local-path
-  register: k8s_local_path_check
-  changed_when: false
-  failed_when: false
-
-- name: Install local-path provisioner when missing
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - apply
-      - -f
-      - "{{ k8s_cluster.local_path_manifest_url }}"
-  when: k8s_local_path_check.rc != 0
-
-- name: Use reachable local-path provisioner image
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - set
-      - image
-      - deployment/local-path-provisioner
-      - -n
-      - local-path-storage
-      - "local-path-provisioner={{ k8s_cluster.local_path_image }}"
-  register: k8s_local_path_image_patch
-  changed_when: "'image updated' in (k8s_local_path_image_patch.stdout | default(''))"
-
-- name: Ensure generated directory exists for Kubernetes manifests
-  ansible.builtin.file:
-    path: "{{ generated_root | default('/tmp') }}"
-    state: directory
-    mode: "0755"
-
-- name: Render local-path config with reachable helper image
-  ansible.builtin.copy:
-    dest: "{{ generated_root | default('/tmp') }}/local-path-config.yaml"
-    mode: "0644"
-    content: |
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: local-path-config
-        namespace: local-path-storage
-      data:
-        config.json: |-
-          {
-                  "nodePathMap":[
-                  {
-                          "node":"DEFAULT_PATH_FOR_NON_LISTED_NODES",
-                          "paths":["/opt/local-path-provisioner"]
-                  }
-                  ]
-          }
-        helperPod.yaml: |-
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: helper-pod
-          spec:
-            priorityClassName: system-node-critical
-            tolerations:
-              - key: node.kubernetes.io/disk-pressure
-                operator: Exists
-                effect: NoSchedule
-            containers:
-            - name: helper-pod
-              image: {{ k8s_cluster.local_path_helper_image }}
-              imagePullPolicy: IfNotPresent
-        setup: |-
-          #!/bin/sh
-          set -eu
-          mkdir -m 0777 -p "$VOL_DIR"
-        teardown: |-
-          #!/bin/sh
-          set -eu
-          rm -rf "$VOL_DIR"
-
-- name: Apply local-path helper image config
-  ansible.builtin.command: "kubectl apply -f {{ generated_root | default('/tmp') }}/local-path-config.yaml"
-
-- name: Mark local-path as default StorageClass
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - patch
-      - storageclass
-      - local-path
-      - -p
-      - '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
-
-- name: Wait for local-path provisioner
-  ansible.builtin.command: kubectl rollout status deployment/local-path-provisioner -n local-path-storage --timeout=180s
-  changed_when: false
-
-- name: Wait for Kubernetes node readiness
-  ansible.builtin.command: kubectl wait --for=condition=Ready node --all --timeout=300s
-  changed_when: false
+- name: Print Kubernetes cluster summary
+  ansible.builtin.debug:
+    msg: "{{ k8s_cluster_nodes_after.stdout_lines }}"

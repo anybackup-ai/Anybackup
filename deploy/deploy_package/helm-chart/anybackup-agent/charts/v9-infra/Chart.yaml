@@ -1,6 +1,0 @@
-apiVersion: v2
-name: v9-infra
-description: V9 alpha infrastructure chart for PostgreSQL, RabbitMQ, Redis, and OpenSearch
-type: application
-version: 0.1.0
-appVersion: "0.1.0"

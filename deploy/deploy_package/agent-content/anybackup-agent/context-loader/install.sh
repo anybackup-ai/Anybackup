@@ -89,6 +89,8 @@ IMPORT_MODE="${CONTEXTLOADER_IMPORT_MODE:-upsert}"
 CONTEXTLOADER_TOOLBOX_NAME="${CONTEXTLOADER_TOOLBOX_NAME:-contextloader工具集_060}"
 KWEAVER_INSECURE="${KWEAVER_INSECURE:-0}"
 CONTEXTLOADER_SKIP_VERIFY="${CONTEXTLOADER_SKIP_VERIFY:-0}"
+CONTEXTLOADER_IMPORT_RETRIES="${CONTEXTLOADER_IMPORT_RETRIES:-5}"
+CONTEXTLOADER_IMPORT_RETRY_DELAY="${CONTEXTLOADER_IMPORT_RETRY_DELAY:-6}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -152,22 +154,45 @@ token="$(get_kweaver_token)"
 [[ -n "$token" ]] || error "Failed to get KWeaver token from CLI."
 
 curl_base_args=(-sS -f)
+curl_import_args=(-sS)
 if [[ "$KWEAVER_INSECURE" == "1" ]]; then
   curl_base_args=(-k "${curl_base_args[@]}")
+  curl_import_args=(-k "${curl_import_args[@]}")
 fi
 
 for TOOLBOX_FILE in "${TOOLBOX_FILES[@]}"; do
   log "Toolbox file: $TOOLBOX_FILE"
-  response="$(
-    curl "${curl_base_args[@]}" \
-      -X POST \
-      "$import_url" \
-      -H "Authorization: Bearer ${token}" \
-      -H "x-business-domain: ${KWEAVER_BUSINESS_DOMAIN}" \
-      -F "data=@${TOOLBOX_FILE}" \
-      -F "mode=${IMPORT_MODE}"
-  )"
-  printf '%s\n' "$response"
+  response=""
+  for attempt in $(seq 1 "$CONTEXTLOADER_IMPORT_RETRIES"); do
+    response_file="$(mktemp)"
+    http_status="$(
+      curl "${curl_import_args[@]}" \
+        -o "$response_file" \
+        -w '%{http_code}' \
+        -X POST \
+        "$import_url" \
+        -H "Authorization: Bearer ${token}" \
+        -H "x-business-domain: ${KWEAVER_BUSINESS_DOMAIN}" \
+        -F "data=@${TOOLBOX_FILE}" \
+        -F "mode=${IMPORT_MODE}"
+    )"
+    response="$(cat "$response_file")"
+    rm -f "$response_file"
+    if [[ "$http_status" =~ ^2 ]]; then
+      printf '%s\n' "$response"
+      break
+    fi
+    if [[ "$http_status" != "500" && "$http_status" != "502" && "$http_status" != "503" && "$http_status" != "504" ]]; then
+      printf '%s\n' "$response" >&2
+      error "ContextLoader toolbox import failed with HTTP $http_status"
+    fi
+    if [[ "$attempt" -ge "$CONTEXTLOADER_IMPORT_RETRIES" ]]; then
+      printf '%s\n' "$response" >&2
+      error "ContextLoader toolbox import failed with HTTP $http_status after $attempt attempts"
+    fi
+    log "ContextLoader import returned HTTP $http_status, retrying in ${CONTEXTLOADER_IMPORT_RETRY_DELAY}s ($attempt/${CONTEXTLOADER_IMPORT_RETRIES})"
+    sleep "$CONTEXTLOADER_IMPORT_RETRY_DELAY"
+  done
 done
 
 if [[ "$CONTEXTLOADER_SKIP_VERIFY" == "1" ]]; then

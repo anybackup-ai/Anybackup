@@ -8,6 +8,25 @@
     name: internal/kweaver_cli_config
   when: kweaver_cli.enabled | default(true) | bool
 
+- name: Resolve Agent content KWeaver API base URL
+  ansible.builtin.set_fact:
+    agent_content_effective_base_url: >-
+      {{
+        (agent_content.contextloader.base_url | default('', true))
+        or (agent_content.kweaver_base_url | default('', true))
+        or (kweaver_cli_effective_base_url | default('', true))
+        or (public_base_url | default('', true))
+      }}
+
+- name: Assert Agent content KWeaver API base URL is resolved
+  ansible.builtin.assert:
+    that:
+      - agent_content_effective_base_url | length > 0
+    fail_msg: >-
+      Agent content requires a KWeaver API base URL for model, ContextLoader,
+      skill, and Agent import steps. Set agent_content_kweaver_base_url,
+      agent_content_contextloader_base_url, or kweaver_cli_base_url.
+
 - name: Check packaged Agent content exists
   ansible.builtin.stat:
     path: "{{ agent_content.package_dir }}"
@@ -40,10 +59,14 @@
     mode: "0644"
   when: agent_content.copy_assets | bool
 
-- name: Make packaged Agent install scripts executable
+- name: Normalize packaged Agent install scripts and make them executable
   ansible.builtin.shell: |
     set -euo pipefail
-    find "{{ agent_content.remote_root }}/anybackup-agent" -type f -name '*.sh' -exec chmod 0755 {} \;
+    find "{{ agent_content.remote_root }}/anybackup-agent" -type f -name '*.sh' \
+      -exec perl -pi -e 's/\015$//' {} \; \
+      -exec chmod 0755 {} \;
+  args:
+    executable: /bin/bash
   changed_when: false
 
 - name: Check required Agent content commands
@@ -121,6 +144,68 @@
       agent_content_kweaver_username, and agent_content_kweaver_password.
       stderr={{ agent_content_kweaver_auth_check.stderr | default('') }}
 
+- name: Ensure KWeaver content deployment user has required platform roles
+  ansible.builtin.command:
+    argv:
+      - "{{ agent_content.remote_root }}/anybackup-agent/kweaver-permissions/ensure-role-membership.sh"
+      - --roles
+      - "{{ agent_content.kweaver_required_roles | join(',') }}"
+      - --config-path
+      - "{{ remote_deploy_root }}/kweaver-config/config.yaml"
+      - --namespace
+      - "{{ kweaver.resource_namespace | default('resource') }}"
+  register: agent_content_kweaver_role_membership
+  changed_when: "'Ensured KWeaver role membership' in (agent_content_kweaver_role_membership.stdout | default(''))"
+  when: agent_content.ensure_kweaver_role_memberships | bool
+
+- name: Reconcile BKN business-domain binding mode
+  ansible.builtin.shell: |
+    set -euo pipefail
+    namespace="{{ agent_content.bkn_business_domain.namespace }}"
+    deployment="{{ agent_content.bkn_business_domain.deployment_name }}"
+    container="{{ agent_content.bkn_business_domain.container_name }}"
+    service="{{ agent_content.bkn_business_domain.service_name }}"
+    business_domain="{{ agent_content.business_domain }}"
+
+    if kubectl get service "$service" -n "$namespace" >/dev/null 2>&1; then
+      desired="true"
+      reason="business_system_service_present"
+    else
+      {% if agent_content.bkn_business_domain.disable_when_service_absent | bool %}
+      desired="false"
+      reason="business_system_service_absent"
+      {% else %}
+      echo "BKN business-domain binding requires service $service in namespace $namespace." >&2
+      exit 1
+      {% endif %}
+    fi
+
+    current="$(kubectl get deployment "$deployment" -n "$namespace" -o jsonpath="{.spec.template.spec.containers[?(@.name==\"$container\")].env[?(@.name==\"BUSINESS_DOMAIN_ENABLED\")].value}" 2>/dev/null || true)"
+    if [[ "$current" != "$desired" ]]; then
+      kubectl set env "deployment/$deployment" -n "$namespace" "BUSINESS_DOMAIN_ENABLED=$desired"
+      kubectl rollout status "deployment/$deployment" -n "$namespace" --timeout=180s
+      echo "reconciled_bkn_business_domain_binding=$desired reason=$reason"
+    else
+      echo "bkn_business_domain_binding_already=$desired reason=$reason"
+    fi
+
+    for i in $(seq 1 {{ agent_content.bkn_business_domain.readiness_retries | int }}); do
+      if kweaver bkn list -bd "$business_domain" >/tmp/anybackup-bkn-readiness.out 2>/tmp/anybackup-bkn-readiness.err; then
+        echo "bkn_api_ready_after_attempt=$i"
+        exit 0
+      fi
+      sleep {{ agent_content.bkn_business_domain.readiness_delay_seconds | int }}
+    done
+
+    echo "BKN API did not become ready after reconciling business-domain binding." >&2
+    cat /tmp/anybackup-bkn-readiness.err >&2 || true
+    exit 1
+  args:
+    executable: /bin/bash
+  register: agent_content_bkn_business_domain_reconcile
+  changed_when: "'reconciled_bkn_business_domain_binding=' in (agent_content_bkn_business_domain_reconcile.stdout | default(''))"
+  when: agent_content.bkn_business_domain.reconcile | bool
+
 - name: Deploy Foundation OpenSearch HTTP proxy in V9 infra namespace
   ansible.builtin.command:
     argv:
@@ -143,6 +228,34 @@
       - "{{ agent_content.foundation_opensearch_proxy.manifest_file }}"
   when: agent_content.deploy_foundation_opensearch_proxy | bool
 
+- name: Prompt for Foundation OpenSearch password when needed
+  ansible.builtin.pause:
+    prompt: "Input Foundation OpenSearch password for KWeaver Vega catalog (output is hidden)"
+    echo: false
+  register: agent_content_foundation_opensearch_password_prompt
+  no_log: true
+  when:
+    - agent_content.deploy_foundation_opensearch_vega | bool
+    - agent_content.foundation_opensearch_vega.password | length == 0
+
+- name: Resolve Foundation OpenSearch password for Vega catalog
+  ansible.builtin.set_fact:
+    agent_content_foundation_opensearch_password_effective: "{{ agent_content.foundation_opensearch_vega.password or (agent_content_foundation_opensearch_password_prompt.user_input | default('')) }}"
+  no_log: true
+  when: agent_content.deploy_foundation_opensearch_vega | bool
+
+- name: Assert Foundation OpenSearch password is ready for Vega catalog
+  ansible.builtin.assert:
+    that:
+      - agent_content_foundation_opensearch_password_effective | length > 0
+    fail_msg: >-
+      Foundation OpenSearch Vega catalog requires
+      AGENT_CONTENT_FOUNDATION_OPENSEARCH_PASSWORD or
+      agent_content_foundation_opensearch_password, or a value entered at the
+      hidden prompt. This password is separate from KWeaver credentials and
+      Foundation AK/SK.
+  when: agent_content.deploy_foundation_opensearch_vega | bool
+
 - name: Create Foundation OpenSearch Vega catalog
   ansible.builtin.command:
     argv:
@@ -156,7 +269,7 @@
       - --username
       - "{{ agent_content.foundation_opensearch_vega.username }}"
       - --password
-      - "{{ agent_content.foundation_opensearch_vega.password }}"
+      - "{{ agent_content_foundation_opensearch_password_effective }}"
       - --index-pattern
       - "{{ agent_content.foundation_opensearch_vega.index_pattern }}"
       - --biz-domain
@@ -207,9 +320,25 @@
 - name: Deploy KWeaver LLM and small-model config
   ansible.builtin.shell: |
     set -euo pipefail
+    TOKEN="${KWEAVER_ADMIN_TOKEN:-${KWEAVER_TOKEN:-}}"
+    if [[ -z "$TOKEN" ]]; then
+      TOKEN="$(kweaver token 2>/dev/null | tail -n 1 | tr -d '\r\n' || true)"
+    fi
+    if [[ -z "$TOKEN" ]]; then
+      TOKEN="$(kweaver auth token 2>/dev/null | tail -n 1 | tr -d '\r\n' || true)"
+    fi
+    if [[ -z "$TOKEN" ]]; then
+      echo "Unable to resolve KWeaver CLI token for kweaver-admin model deployment." >&2
+      exit 1
+    fi
+    export KWEAVER_TOKEN="$TOKEN"
+    export KWEAVER_ADMIN_TOKEN="$TOKEN"
+    export KWEAVER_BASE_URL="{{ agent_content_effective_base_url }}"
+    export KWEAVER_BUSINESS_DOMAIN="{{ agent_content.business_domain }}"
+
     args=(
       --config-dir "{{ agent_content.model_config.remote_dir }}"
-      --base-url "{{ agent_content.contextloader.base_url }}"
+      --base-url "{{ agent_content_effective_base_url }}"
       --biz-domain "{{ agent_content.business_domain }}"
       --state-file "{{ agent_content.model_config.state_file }}"
     )
@@ -221,6 +350,171 @@
     {% endif %}
     "{{ agent_content.remote_root }}/anybackup-agent/model-config/install.sh" "${args[@]}"
   when: agent_content.deploy_models | bool
+  environment:
+    ANYBACKUP_LLM_NAME: "{{ lookup('env', 'ANYBACKUP_LLM_NAME') }}"
+    ANYBACKUP_LLM_API_KEY: "{{ lookup('env', 'ANYBACKUP_LLM_API_KEY') }}"
+    ANYBACKUP_EMBEDDING_MODEL_NAME: "{{ lookup('env', 'ANYBACKUP_EMBEDDING_MODEL_NAME') }}"
+    ANYBACKUP_EMBEDDING_API_KEY: "{{ lookup('env', 'ANYBACKUP_EMBEDDING_API_KEY') }}"
+    ANYBACKUP_RERANKER_MODEL_NAME: "{{ lookup('env', 'ANYBACKUP_RERANKER_MODEL_NAME') }}"
+    ANYBACKUP_RERANKER_API_KEY: "{{ lookup('env', 'ANYBACKUP_RERANKER_API_KEY') }}"
+
+- name: Clear KWeaver small-model runtime cache after model config changes
+  ansible.builtin.command:
+    argv:
+      - /bin/bash
+      - -lc
+      - |
+        set -euo pipefail
+        state_file="{{ agent_content.model_config.state_file }}"
+        redis_namespace="{{ agent_content.model_config.redis_namespace }}"
+        redis_pod="{{ agent_content.model_config.redis_pod_name }}"
+        redis_container="{{ agent_content.model_config.redis_container_name }}"
+        redis_db="{{ agent_content.model_config.redis_db }}"
+        pass_namespace="{{ agent_content.model_config.redis_password_config_namespace }}"
+        pass_configmap="{{ agent_content.model_config.redis_password_configmap_name }}"
+        pass_key="{{ agent_content.model_config.redis_password_config_key }}"
+
+        if [[ ! -s "$state_file" ]]; then
+          echo "skip_small_model_cache_clear=missing_state"
+          exit 0
+        fi
+        if ! kubectl get pod "$redis_pod" -n "$redis_namespace" >/dev/null 2>&1; then
+          echo "skip_small_model_cache_clear=redis_pod_not_found"
+          exit 0
+        fi
+
+        tmpdir="$(mktemp -d)"
+        trap 'rm -rf "$tmpdir"' EXIT
+
+        grep -E '"(source_id|source_name|target_id|target_name|source_model_id|model_name)"[[:space:]]*:' "$state_file" \
+          | tr -d '\r' \
+          | sed -E 's/.*:[[:space:]]*"([^"]+)".*/dip:model-api:small-model:\1:list/' \
+          | awk 'NF && !seen[$0]++' \
+          > "$tmpdir/small-model-cache-keys.txt" || true
+
+        if [[ ! -s "$tmpdir/small-model-cache-keys.txt" ]]; then
+          echo "skip_small_model_cache_clear=no_keys"
+          exit 0
+        fi
+
+        mapfile -t cache_keys < "$tmpdir/small-model-cache-keys.txt"
+
+        if [[ "${#cache_keys[@]}" -eq 0 ]]; then
+          echo "skip_small_model_cache_clear=no_keys"
+          exit 0
+        fi
+
+        redis_password="$(kubectl get configmap "$pass_configmap" -n "$pass_namespace" -o "jsonpath={.data.$pass_key}" 2>/dev/null || true)"
+        if [[ -z "$redis_password" ]]; then
+          echo "skip_small_model_cache_clear=missing_redis_password"
+          exit 0
+        fi
+
+        if kubectl exec -n "$redis_namespace" "$redis_pod" -c "$redis_container" -- \
+          env REDISCLI_AUTH="$redis_password" redis-cli -n "$redis_db" DEL "${cache_keys[@]}" >/dev/null; then
+          echo "cleared_small_model_cache_keys=${#cache_keys[@]}"
+        else
+          echo "warn_small_model_cache_clear_failed=redis_cli"
+        fi
+  register: agent_content_small_model_cache_clear
+  changed_when: "'cleared_small_model_cache_keys=' in (agent_content_small_model_cache_clear.stdout | default(''))"
+  failed_when: false
+  ignore_errors: true
+  no_log: true
+  when:
+    - agent_content.deploy_models | bool
+    - agent_content.model_config.clear_small_model_cache | bool
+
+- name: Restart KWeaver model API after model config changes
+  ansible.builtin.shell: |
+    set -euo pipefail
+    namespace="{{ kweaver.namespace }}"
+    deployment="mf-model-api"
+    if kubectl get "deployment/$deployment" -n "$namespace" >/dev/null 2>&1; then
+      kubectl rollout restart "deployment/$deployment" -n "$namespace" >/dev/null
+      kubectl rollout status "deployment/$deployment" -n "$namespace" --timeout=180s
+      echo "restarted_kweaver_model_api=$deployment"
+    else
+      echo "skip_kweaver_model_api_restart=$deployment not_found"
+    fi
+  args:
+    executable: /bin/bash
+  when: agent_content.deploy_models | bool
+
+- name: Enable BKN default small-model usage for ContextLoader
+  ansible.builtin.shell: |
+    set -euo pipefail
+    namespace="{{ agent_content.bkn_small_model.namespace }}"
+    configmap="{{ agent_content.bkn_small_model.configmap_name }}"
+    key="{{ agent_content.bkn_small_model.config_key }}"
+    deployment="{{ agent_content.bkn_small_model.deployment_name }}"
+    desired="{{ 'true' if agent_content.bkn_small_model.default_enabled | bool else 'false' }}"
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
+
+    kubectl get configmap "$configmap" -n "$namespace" -o json > "$tmpdir/configmap.json"
+
+    update_result="$(
+      python3 - "$tmpdir/configmap.json" "$key" "$desired" "$tmpdir/bkn-backend-config.yaml" <<'PY'
+    import json
+    import re
+    import sys
+
+    configmap_path, key, desired, output_path = sys.argv[1:]
+    with open(configmap_path, encoding="utf-8") as handle:
+        configmap = json.load(handle)
+
+    data = configmap.get("data") or {}
+    if key not in data:
+        raise SystemExit(f"ConfigMap data key not found: {key}")
+
+    original = data[key]
+    pattern = re.compile(r"(?m)^(\s*defaultSmallModelEnabled:\s*)(true|false)(\s*)$")
+    if pattern.search(original):
+        updated = pattern.sub(rf"\g<1>{desired}\g<3>", original, count=1)
+    else:
+        updated = re.sub(
+            r"(?m)^(server:\s*)$",
+            rf"\1\n  defaultSmallModelEnabled: {desired}",
+            original,
+            count=1,
+        )
+
+    if updated == original:
+        print("changed=false")
+    else:
+        if "defaultSmallModelEnabled" not in updated:
+            raise SystemExit("Unable to place server.defaultSmallModelEnabled in BKN backend config")
+        with open(output_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(updated)
+        print("changed=true")
+    PY
+    )"
+
+    if [[ "$update_result" == "changed=true" ]]; then
+      patch_payload="$(
+        python3 - "$key" "$tmpdir/bkn-backend-config.yaml" <<'PY'
+    import json
+    import sys
+
+    key, config_path = sys.argv[1:]
+    with open(config_path, encoding="utf-8") as handle:
+        config_text = handle.read()
+    print(json.dumps({"data": {key: config_text}}, ensure_ascii=False))
+    PY
+      )"
+      kubectl patch configmap "$configmap" -n "$namespace" --type merge -p "$patch_payload" >/dev/null
+      kubectl rollout restart "deployment/$deployment" -n "$namespace" >/dev/null
+      kubectl rollout status "deployment/$deployment" -n "$namespace" --timeout="{{ agent_content.bkn_small_model.rollout_timeout }}"
+      echo "reconciled_bkn_default_small_model_enabled=$desired"
+    else
+      echo "bkn_default_small_model_enabled_already=$desired"
+    fi
+  args:
+    executable: /bin/bash
+  register: agent_content_bkn_small_model_reconcile
+  changed_when: "'reconciled_bkn_default_small_model_enabled=' in (agent_content_bkn_small_model_reconcile.stdout | default(''))"
+  when: agent_content.bkn_small_model.reconcile | bool
 
 - name: Create backup rule knowledge Vega catalog
   ansible.builtin.command:
@@ -271,6 +565,99 @@
     PYTHONPATH: "{{ agent_content.remote_root }}/deploy-orchestrator"
   when: agent_content.deploy_backup_bkns | bool
 
+- name: Check KWeaver Etrino optional services before recovery DataViews
+  ansible.builtin.shell: |
+    set -euo pipefail
+    namespace="{{ agent_content.vega.optional_service_namespace }}"
+    missing=""
+    not_ready=""
+    missing_count=0
+    not_ready_count=0
+
+    for workload in $KWEAVER_ETRINO_OPTIONAL_WORKLOADS; do
+      resource=""
+      for kind in deployment statefulset; do
+        if kubectl get "$kind/$workload" -n "$namespace" >/dev/null 2>&1; then
+          resource="$kind/$workload"
+          break
+        fi
+      done
+
+      if [[ -z "$resource" ]]; then
+        missing_count=$((missing_count + 1))
+        if [[ -z "$missing" ]]; then
+          missing="$workload"
+        else
+          missing="$missing $workload"
+        fi
+        continue
+      fi
+
+      ready="$(kubectl get "$resource" -n "$namespace" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+      desired="$(kubectl get "$resource" -n "$namespace" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)"
+      ready="${ready:-0}"
+      desired="${desired:-1}"
+      if [[ "$ready" -lt 1 || "$ready" -lt "$desired" ]]; then
+        not_ready_count=$((not_ready_count + 1))
+        if [[ -z "$not_ready" ]]; then
+          not_ready="$resource($ready/$desired)"
+        else
+          not_ready="$not_ready $resource($ready/$desired)"
+        fi
+      fi
+    done
+
+    if [[ "$missing_count" -gt 0 || "$not_ready_count" -gt 0 ]]; then
+      {
+        echo "KWeaver DataView creation requires Etrino optional services before recovery Vega."
+        echo "Missing workloads: ${missing:-none}"
+        echo "Not ready workloads: ${not_ready:-none}"
+        echo "Install or enable the KWeaver Etrino optional package first, then rerun the installer."
+        echo "Temporary Core-only workaround: pass --agent-content-vega-skip-kweaver-data-views true. This skips KWeaver DataViews and is not a full integrated deployment closure."
+      } >&2
+      exit 1
+    fi
+  args:
+    executable: /bin/bash
+  environment:
+    KWEAVER_ETRINO_OPTIONAL_WORKLOADS: "{{ agent_content.vega.optional_service_workloads | join(' ') }}"
+  changed_when: false
+  when:
+    - agent_content.deploy_recovery_vega | bool
+    - not agent_content.vega.skip_kweaver_data_views | bool
+    - agent_content.vega.require_optional_services_for_dataviews | bool
+
+- name: Prompt for Foundation MariaDB password when recovery DataViews need it
+  ansible.builtin.pause:
+    prompt: "Input Foundation MariaDB password for recovery Vega/DataViews (output is hidden)"
+    echo: false
+  register: agent_content_foundation_vega_password_prompt
+  no_log: true
+  when:
+    - agent_content.deploy_recovery_vega | bool
+    - agent_content.foundation_vega.enabled | bool
+    - agent_content.foundation_vega.password | length == 0
+
+- name: Resolve Foundation MariaDB password for recovery Vega/DataViews
+  ansible.builtin.set_fact:
+    agent_content_foundation_vega_password_effective: "{{ agent_content.foundation_vega.password or (agent_content_foundation_vega_password_prompt.user_input | default('')) }}"
+  no_log: true
+  when:
+    - agent_content.deploy_recovery_vega | bool
+    - agent_content.foundation_vega.enabled | bool
+
+- name: Assert Foundation MariaDB password is ready for recovery Vega/DataViews
+  ansible.builtin.assert:
+    that:
+      - agent_content_foundation_vega_password_effective | length > 0
+    fail_msg: >-
+      Recovery Vega/DataView creation requires the Foundation MariaDB password.
+      Provide AGENT_CONTENT_FOUNDATION_VEGA_PASSWORD,
+      agent_content_foundation_vega_password, or enter it at the hidden prompt.
+  when:
+    - agent_content.deploy_recovery_vega | bool
+    - agent_content.foundation_vega.enabled | bool
+
 - name: Run recovery Vega data install script when enabled
   ansible.builtin.command:
     argv:
@@ -300,12 +687,13 @@
       - --biz-domain
       - "{{ agent_content.business_domain }}"
   environment:
+    KWEAVER_SKIP_DATA_VIEWS: "{{ '1' if agent_content.vega.skip_kweaver_data_views | bool else '0' }}"
     FOUNDATION_VEGA_ENABLED: "{{ '1' if agent_content.foundation_vega.enabled | bool else '0' }}"
     FOUNDATION_DB_ENGINE: "{{ agent_content.foundation_vega.engine }}"
     FOUNDATION_DB_HOST: "{{ agent_content.foundation_vega.host }}"
     FOUNDATION_DB_PORT: "{{ agent_content.foundation_vega.port | string }}"
     FOUNDATION_DB_USER: "{{ agent_content.foundation_vega.username }}"
-    FOUNDATION_DB_PASSWORD: "{{ agent_content.foundation_vega.password }}"
+    FOUNDATION_DB_PASSWORD: "{{ agent_content_foundation_vega_password_effective | default(agent_content.foundation_vega.password) }}"
     FOUNDATION_DB_SCHEMA: "{{ agent_content.foundation_vega.schema }}"
   no_log: true
   when: agent_content.deploy_recovery_vega | bool
@@ -319,12 +707,50 @@
       - "{{ agent_content.business_domain }}"
   when: agent_content.deploy_recovery_bkns | bool
 
+- name: Reconcile Agent operator business-domain binding mode
+  ansible.builtin.shell: |
+    set -euo pipefail
+    namespace="{{ agent_content.agent_operator_business_domain.namespace }}"
+    deployment="{{ agent_content.agent_operator_business_domain.deployment_name }}"
+    container="{{ agent_content.agent_operator_business_domain.container_name }}"
+    service="{{ agent_content.agent_operator_business_domain.service_name }}"
+
+    if kubectl get service "$service" -n "$namespace" >/dev/null 2>&1; then
+      desired="true"
+      reason="business_system_service_present"
+    else
+      {% if agent_content.agent_operator_business_domain.disable_when_service_absent | bool %}
+      desired="false"
+      reason="business_system_service_absent"
+      {% else %}
+      echo "Agent operator business-domain binding requires service $service in namespace $namespace." >&2
+      exit 1
+      {% endif %}
+    fi
+
+    current="$(kubectl get deployment "$deployment" -n "$namespace" -o jsonpath="{.spec.template.spec.containers[?(@.name==\"$container\")].env[?(@.name==\"BUSINESS_DOMAIN_ENABLED\")].value}" 2>/dev/null || true)"
+    if [[ "$current" != "$desired" ]]; then
+      kubectl set env "deployment/$deployment" -n "$namespace" "BUSINESS_DOMAIN_ENABLED=$desired"
+      kubectl rollout status "deployment/$deployment" -n "$namespace" --timeout=180s
+      sleep {{ agent_content.agent_operator_business_domain.readiness_delay_seconds | int }}
+      echo "reconciled_agent_operator_business_domain_binding=$desired reason=$reason"
+    else
+      echo "agent_operator_business_domain_binding_already=$desired reason=$reason"
+    fi
+  args:
+    executable: /bin/bash
+  register: agent_content_agent_operator_business_domain_reconcile
+  changed_when: "'reconciled_agent_operator_business_domain_binding=' in (agent_content_agent_operator_business_domain_reconcile.stdout | default(''))"
+  when:
+    - agent_content.deploy_contextloader | bool
+    - agent_content.agent_operator_business_domain.reconcile | bool
+
 - name: Import ContextLoader toolbox
   ansible.builtin.command:
     argv:
       - "{{ agent_content.remote_root }}/anybackup-agent/context-loader/install.sh"
       - --base-url
-      - "{{ agent_content.contextloader.base_url }}"
+      - "{{ agent_content_effective_base_url }}"
       - --biz-domain
       - "{{ agent_content.business_domain }}"
       - --mode
@@ -341,7 +767,7 @@
   ansible.builtin.shell: |
     set -euo pipefail
     args=(
-      --base-url "{{ agent_content.foundation_cli_skills.base_url }}"
+      --base-url "{{ agent_content_effective_base_url }}"
       --biz-domain "{{ agent_content.business_domain }}"
       --skills-root "{{ agent_content.foundation_cli_skills.skills_root }}"
       --state-file "{{ agent_content.foundation_cli_skills.state_file }}"
@@ -365,6 +791,25 @@
     {% endif %}
     "{{ agent_content.remote_root }}/anybackup-agent/foundation-cli-skills/install.sh" "${args[@]}"
   when: agent_content.deploy_foundation_cli_skills | bool
+
+- name: Install Python dependencies for sandbox skills
+  ansible.builtin.shell: |
+    set -euo pipefail
+    args=(
+      --namespace "{{ agent_content.skill_dependencies.namespace }}"
+      --service-name "{{ agent_content.skill_dependencies.service_name }}"
+      --service-port "{{ agent_content.skill_dependencies.service_port | string }}"
+      --pypi-url "{{ agent_content.skill_dependencies.python_package_index_url }}"
+      --state-file "{{ agent_content.skill_dependencies.state_file }}"
+    )
+    {% if agent_content.skill_dependencies.session_id | length > 0 %}
+    args+=(--session-id "{{ agent_content.skill_dependencies.session_id }}")
+    {% endif %}
+    {% for skill_dir in agent_content.skill_dependencies.skill_dirs %}
+    args+=(--skill-dir "{{ skill_dir }}")
+    {% endfor %}
+    "{{ agent_content.remote_root }}/anybackup-agent/skill-dependencies/install.sh" "${args[@]}"
+  when: agent_content.deploy_skill_dependencies | bool
 
 - name: Check packaged Agent export config exists
   ansible.builtin.stat:
@@ -392,13 +837,120 @@
     directory_mode: "0755"
   when: agent_content.deploy_agent_export | bool
 
+- name: Reconcile Agent factory business-domain binding mode
+  ansible.builtin.shell: |
+    set -euo pipefail
+    namespace="{{ agent_content.agent_factory_business_domain.namespace }}"
+    deployment="{{ agent_content.agent_factory_business_domain.deployment_name }}"
+    service="{{ agent_content.agent_factory_business_domain.service_name }}"
+    configmap="{{ agent_content.agent_factory_business_domain.configmap_name }}"
+    key="{{ agent_content.agent_factory_business_domain.config_key }}"
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
+
+    if kubectl get service "$service" -n "$namespace" >/dev/null 2>&1; then
+      disable_desired="false"
+      reason="business_system_service_present"
+    else
+      {% if agent_content.agent_factory_business_domain.disable_when_service_absent | bool %}
+      disable_desired="true"
+      reason="business_system_service_absent"
+      {% else %}
+      echo "Agent factory business-domain binding requires service $service in namespace $namespace." >&2
+      exit 1
+      {% endif %}
+    fi
+
+    kubectl get configmap "$configmap" -n "$namespace" -o json > "$tmpdir/configmap.json"
+    update_result="$(
+      python3 - "$tmpdir/configmap.json" "$key" "$disable_desired" "$tmpdir/agent-factory.yaml" <<'PY'
+    import json
+    import re
+    import sys
+
+    configmap_path, key, desired, output_path = sys.argv[1:]
+    with open(configmap_path, encoding="utf-8") as handle:
+        configmap = json.load(handle)
+
+    data = configmap.get("data") or {}
+    if key not in data:
+        raise SystemExit(f"ConfigMap data key not found: {key}")
+
+    original = data[key]
+    pattern = re.compile(r"(?m)^(\s*disable_biz_domain:\s*)(true|false)(\s*)$")
+    if pattern.search(original):
+        updated = pattern.sub(rf"\g<1>{desired}\g<3>", original, count=1)
+    else:
+        updated = re.sub(
+            r"(?m)^(\s*switch_fields:\s*)$",
+            rf"\1\n  disable_biz_domain: {desired}",
+            original,
+            count=1,
+        )
+
+    if updated == original:
+        print("changed=false")
+    else:
+        if "disable_biz_domain" not in updated:
+            raise SystemExit("Unable to place switch_fields.disable_biz_domain in agent-factory config")
+        with open(output_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(updated)
+        print("changed=true")
+    PY
+    )"
+
+    if [[ "$update_result" == "changed=true" ]]; then
+      patch_payload="$(
+        python3 - "$key" "$tmpdir/agent-factory.yaml" <<'PY'
+    import json
+    import sys
+
+    key, config_path = sys.argv[1:]
+    with open(config_path, encoding="utf-8") as handle:
+        config_text = handle.read()
+    print(json.dumps({"data": {key: config_text}}, ensure_ascii=False))
+    PY
+      )"
+      kubectl patch configmap "$configmap" -n "$namespace" --type merge -p "$patch_payload" >/dev/null
+      kubectl rollout status "deployment/$deployment" -n "$namespace" --timeout=180s
+      kubectl rollout restart "deployment/$deployment" -n "$namespace" >/dev/null
+      kubectl rollout status "deployment/$deployment" -n "$namespace" --timeout=180s
+      sleep {{ agent_content.agent_factory_business_domain.readiness_delay_seconds | int }}
+      echo "reconciled_agent_factory_business_domain_binding=disable_biz_domain:$disable_desired reason=$reason"
+    else
+      current="$(
+        python3 - "$tmpdir/configmap.json" "$key" <<'PY'
+    import json
+    import re
+    import sys
+
+    configmap_path, key = sys.argv[1:]
+    with open(configmap_path, encoding="utf-8") as handle:
+        configmap = json.load(handle)
+    config_text = (configmap.get("data") or {}).get(key, "")
+    match = re.search(r"(?m)^\s*disable_biz_domain:\s*(true|false)\s*$", config_text)
+    print(match.group(1) if match else "")
+    PY
+      )"
+      if [[ "$current" != "$disable_desired" ]]; then
+        echo "Agent factory business-domain binding is not reconciled: expected disable_biz_domain=$disable_desired, got ${current:-missing}" >&2
+        exit 1
+      fi
+      echo "agent_factory_business_domain_binding_already=disable_biz_domain:$disable_desired reason=$reason"
+    fi
+  args:
+    executable: /bin/bash
+  register: agent_content_agent_factory_business_domain_reconcile
+  changed_when: "'reconciled_agent_factory_business_domain_binding=' in (agent_content_agent_factory_business_domain_reconcile.stdout | default(''))"
+  when: agent_content.agent_factory_business_domain.reconcile | bool
+
 - name: Deploy Agents from exported KWeaver Agent config
   ansible.builtin.shell: |
     set -euo pipefail
     args=(
       --export-file "{{ agent_content.agent_export.remote_dir }}/{{ agent_content.agent_export.file_name }}"
       --model-map "{{ agent_content.model_config.state_file }}"
-      --base-url "{{ agent_content.contextloader.base_url }}"
+      --base-url "{{ agent_content_effective_base_url }}"
       --biz-domain "{{ agent_content.business_domain }}"
       --work-dir "{{ agent_content.agent_export.work_dir }}"
     )
@@ -438,6 +990,7 @@
       - "Recovery BKN deployment: {{ agent_content.deploy_recovery_bkns }}"
       - "ContextLoader toolbox import: {{ agent_content.deploy_contextloader }}"
       - "Foundation CLI skill import: {{ agent_content.deploy_foundation_cli_skills }}"
+      - "Sandbox skill dependency install: {{ agent_content.deploy_skill_dependencies }}"
       - "KWeaver model config deployment: {{ agent_content.deploy_models }}"
       - "Agent export deployment: {{ agent_content.deploy_agent_export }}"
       - "Recovery Agent deployment: {{ agent_content.deploy_recovery_agent }}"

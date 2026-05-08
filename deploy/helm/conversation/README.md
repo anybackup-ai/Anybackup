@@ -65,10 +65,3 @@ Internal health checks use `/healthz` and `/readyz`. The default API gateway pat
 ```text
 /api/conversation_service/v1
 ```
-
-## License and Third-Party Notices
-
-- This chart's source is distributed under the repository root [LICENSE](../../../LICENSE) (SSPL-1.0) together with the root [NOTICE](../../../NOTICE).
-- The Python base image and runtime dependencies (FastAPI, SQLAlchemy, aio-pika, asyncpg, etc.) bundled into the Conversation Service image shipped by this chart are declared uniformly in [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md).
-- When upgrading the base image or any runtime dependency, the Inventory table of the above notice file MUST be updated in the same commit.
-- PostgreSQL, RabbitMQ, and Redis are accessed via pure protocol-level invocations and do not trigger any third-party open-source component notice obligation; the Keycloak image is declared separately by `deploy/helm/auth`.

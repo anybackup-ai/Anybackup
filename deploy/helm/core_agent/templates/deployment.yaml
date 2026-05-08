@@ -74,12 +74,6 @@ spec:
               value: {{ .Values.config.rabbitmqExchangeType | quote }}
             - name: RABBITMQ_QUEUE
               value: {{ .Values.config.rabbitmqQueue | quote }}
-            - name: RABBITMQ_CONSUMER_COUNT
-              value: {{ .Values.config.rabbitmqConsumerCount | quote }}
-            - name: RABBITMQ_STATUS_EXCHANGE
-              value: {{ .Values.config.rabbitmqStatusExchange | quote }}
-            - name: RABBITMQ_STATUS_ROUTING_KEY
-              value: {{ .Values.config.rabbitmqStatusRoutingKey | quote }}
             - name: KWEAVER_BASE_URL
               value: {{ .Values.config.kweaverBaseUrl | quote }}
             - name: KWEAVER_DECISION_AGENT_ID
@@ -88,16 +82,6 @@ spec:
               value: {{ .Values.config.kweaverBusinessDomain | quote }}
             - name: KWEAVER_TIMEOUT
               value: {{ .Values.config.kweaverTimeout | quote }}
-            {{- if ne (toString .Values.config.kweaverChatTimeout) "" }}
-            - name: KWEAVER_CHAT_TIMEOUT
-              value: {{ .Values.config.kweaverChatTimeout | quote }}
-            {{- end }}
-            - name: KWEAVER_STREAM_PROGRESS_INTERVAL
-              value: {{ .Values.config.kweaverStreamProgressInterval | quote }}
-            - name: KWEAVER_STREAM_TRACE_ENABLED
-              value: {{ .Values.config.kweaverStreamTraceEnabled | quote }}
-            - name: KWEAVER_STREAM_TRACE_DIR
-              value: {{ .Values.config.kweaverStreamTraceDir | quote }}
             - name: KWEAVER_TLS_INSECURE
               value: {{ .Values.config.kweaverTlsInsecure | quote }}
             - name: KWEAVER_PROBE_ON_STARTUP
@@ -112,7 +96,7 @@ spec:
               value: {{ .Values.config.coreAgentLogFile | quote }}
           resources:
 {{ toYaml .Values.resources | indent 12 }}
-{{- if or .Values.envFile.enabled .Values.kweaverHostMount.enabled (eq (toString .Values.config.kweaverStreamTraceEnabled) "true") }}
+{{- if or .Values.envFile.enabled .Values.kweaverHostMount.enabled }}
           volumeMounts:
 {{- if .Values.envFile.enabled }}
             - name: env-file
@@ -123,12 +107,8 @@ spec:
             - name: kweaver-home
               mountPath: {{ .Values.kweaverHostMount.mountPath | quote }}
 {{- end }}
-{{- if eq (toString .Values.config.kweaverStreamTraceEnabled) "true" }}
-            - name: kweaver-stream-trace
-              mountPath: {{ .Values.config.kweaverStreamTraceDir | quote }}
 {{- end }}
-{{- end }}
-{{- if or .Values.envFile.enabled .Values.kweaverHostMount.enabled (eq (toString .Values.config.kweaverStreamTraceEnabled) "true") }}
+{{- if or .Values.envFile.enabled .Values.kweaverHostMount.enabled }}
       volumes:
 {{- if .Values.envFile.enabled }}
         - name: env-file
@@ -139,12 +119,6 @@ spec:
         - name: kweaver-home
           hostPath:
             path: {{ .Values.kweaverHostMount.hostPath | quote }}
-            type: DirectoryOrCreate
-{{- end }}
-{{- if eq (toString .Values.config.kweaverStreamTraceEnabled) "true" }}
-        - name: kweaver-stream-trace
-          hostPath:
-            path: {{ .Values.config.kweaverStreamTraceDir | quote }}
             type: DirectoryOrCreate
 {{- end }}
 {{- end }}

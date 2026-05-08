@@ -5,30 +5,25 @@ remote_chart_root: "{{ remote_deploy_root }}/charts"
 remote_smoke_root: "{{ remote_deploy_root }}/scripts/smoke"
 remote_sandbox_build_dir: "{{ remote_deploy_root }}/sandbox-build"
 artifacts_root: "{{ remote_deploy_root }}/artifacts"
-deployment_chart_source_root: "{{ deployment_chart_source_root_override | default(package_root ~ '/../helm') }}"
-anybackup_repo_root: "{{ anybackup_repo_root_override | default(package_root ~ '/../..') }}"
 deployment_profile: full
 foundation_cli_min_bytes: 1048576
 
 k8s_cluster:
-  pod_cidr: "{{ k8s_pod_cidr | default('10.244.0.0/16') }}"
-  service_cidr: "{{ k8s_service_cidr | default('10.96.0.0/12') }}"
-  helm_version: "{{ k8s_helm_version | default('v3.15.4') }}"
-  flannel_manifest_url: "{{ k8s_flannel_manifest_url | default('https://raw.githubusercontent.com/flannel-io/flannel/v0.25.7/Documentation/kube-flannel.yml') }}"
-  local_path_manifest_url: "{{ k8s_local_path_manifest_url | default('https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.28/deploy/local-path-storage.yaml') }}"
-  local_path_image: "{{ k8s_local_path_image | default('docker.m.daocloud.io/rancher/local-path-provisioner:v0.0.28') }}"
-  local_path_helper_image: "{{ k8s_local_path_helper_image | default('docker.m.daocloud.io/library/busybox:latest') }}"
+  bootstrap_command: "{{ k8s_cluster_bootstrap_command | default('') }}"
+  require_ready_nodes: "{{ k8s_cluster_require_ready_nodes | default(true) }}"
 
 foundation:
-  enabled: "{{ foundation_enabled | default(false) }}"
+  enabled: "{{ foundation_enabled | default(true) }}"
   mode: "{{ foundation_mode | default('integrated') }}"
   package_path: "{{ foundation_package_path | default('/backupsoft/Linux_el7_x64-latest.tar.gz') }}"
-  work_dir: /backupsoft
-  install_root: "{{ foundation_install_root | default('/backupsoft/AnyBackupServer') }}"
-  install_marker: "{{ foundation_install_root | default('/backupsoft/AnyBackupServer') }}/etc/installenv"
-  install_cfg: "{{ foundation_install_root | default('/backupsoft/AnyBackupServer') }}/install.cfg"
+  work_dir: "{{ foundation_work_dir | default((foundation_package_path | default('/backupsoft/Linux_el7_x64-latest.tar.gz')) | dirname) }}"
+  install_root: "{{ foundation_install_root | default('/backupsoft/FoundationServer') }}"
+  install_marker: "{{ foundation_install_root | default('/backupsoft/FoundationServer') }}/etc/installenv"
+  install_cfg: "{{ foundation_install_root | default('/backupsoft/FoundationServer') }}/install.cfg"
   self_ip: "{{ foundation_self_ip | default('') }}"
   access_host: "{{ foundation_access_host | default(foundation_self_ip | default('')) }}"
+  endpoint_port: "{{ foundation_endpoint_port | default(9600) }}"
+  endpoint: "{{ (foundation_endpoint | default('', true)) or (lookup('ansible.builtin.env', 'FOUNDATION_CLI_ENDPOINT') | default('', true)) or ('https://' ~ ((foundation_access_host | default(foundation_self_ip | default(''))) | string) ~ ':' ~ ((foundation_endpoint_port | default(9600)) | string)) }}"
   product: Enterprise
   server_type: NONE
   mgm_type: ControlNode
@@ -37,8 +32,22 @@ foundation:
   force_install: false
   strict_existing_config: true
 
+foundation_client:
+  enabled: "{{ foundation_client_enabled | default(true) }}"
+  work_dir: "{{ foundation_client_work_dir | default(foundation.work_dir | default('/backupsoft')) }}"
+  install_root: "{{ foundation_client_install_root | default((foundation_client_work_dir | default(foundation.work_dir | default('/backupsoft'))) ~ '/FoundationClient') }}"
+  client_archive_path: "{{ foundation_client_archive_path | default((foundation.install_root | default('/backupsoft/FoundationServer')) ~ '/data/softdownload/Linux_el7_x64/FoundationClient-Linux_el7_x64-latest.tar.gz') }}"
+  mysql_package_url: "{{ foundation_client_package_url | default('https://ftp.anybackup.ai/MySQL-Linux_el7_x64-8.0.9.0-20251231-release-zh_CN-ABNormal-378.tar.gz') }}"
+  mysql_package_path: "{{ foundation_client_package_path | default((foundation.work_dir | default('/backupsoft')) ~ '/MySQL-Linux_el7_x64-8.0.9.0-20251231-release-zh_CN-ABNormal-378.tar.gz') }}"
+  self_ip: "{{ foundation_client_self_ip | default(foundation.self_ip | default('')) }}"
+  server_ip: "{{ foundation_client_server_ip | default((foundation.access_host | default('', true)) or (foundation.self_ip | default('', true)), true) }}"
+  target_host: "{{ foundation_client_target_host | default(foundation_client_server_ip | default((foundation.access_host | default('', true)) or (foundation.self_ip | default('', true)), true), true) }}"
+  server_port: "{{ foundation_client_server_port | default(9614) }}"
+  runner_name: "{{ foundation_client_runner_name | default('MySQL') }}"
+  force_reinstall: "{{ foundation_client_force_reinstall | default(false) }}"
+
 offline:
-  mode: false
+  mode: true
   remote_root: "{{ remote_deploy_root }}/offline"
   bin_root: "{{ remote_deploy_root }}/bin"
   skip_kweaver_when_healthy: true
@@ -132,7 +141,15 @@ kweaver_online:
   repo_dir: /opt/v9-sources/kweaver-core
   deploy_dir: /opt/v9-sources/kweaver-core/deploy
   state_configmap_name: kweaver-online-install-state
-  cleanup_failed_releases: "{{ kweaver_online_cleanup_failed_releases | default(true) }}"
+
+kweaver_etrino:
+  enabled: "{{ kweaver_etrino_enabled | default(true) }}"
+  install: "{{ kweaver_etrino_install | default(true) }}"
+  namespace: "{{ kweaver_etrino_namespace | default(kweaver.namespace) }}"
+  script_path: "{{ kweaver_etrino_script_path | default(kweaver_online.deploy_dir ~ '/scripts/services/etrino.sh') }}"
+  config_file: "{{ kweaver_etrino_config_file | default(kweaver.config_path) }}"
+  rollout_timeout: "{{ kweaver_etrino_rollout_timeout | default('20m') }}"
+  required_workloads: "{{ kweaver_etrino_required_workloads | default(['vega-calculate-coordinator', 'vega-calculate-worker', 'vega-metadata', 'vega-datanode', 'vega-namenode-master']) }}"
 
 kweaver_core_compat:
   enabled: "{{ kweaver_core_compat_enabled | default(false) }}"
@@ -168,6 +185,8 @@ kweaver_cli:
   http_signin: "{{ kweaver_cli_http_signin | default(true) }}"
   require_auth: "{{ kweaver_cli_require_auth | default(true) }}"
   verify_bkn_api: "{{ kweaver_cli_verify_bkn_api | default(true) }}"
+  bkn_api_retries: "{{ kweaver_cli_bkn_api_retries | default(40) }}"
+  bkn_api_delay_seconds: "{{ kweaver_cli_bkn_api_delay_seconds | default(15) }}"
   business_domain: "{{ kweaver_cli_business_domain | default(agent_content_business_domain | default('bd_public')) }}"
 
 service_contracts:
@@ -250,22 +269,6 @@ v9_runtime:
 
 v9_services_image_registry: ""
 v9_services_image_tag: alpha1
-business_image_builds:
-  - name: conversation-service
-    source_dir: "{{ anybackup_repo_root }}/Agent/service/conversation"
-    dockerfile: Dockerfile
-    image_repository: conversation-service
-    image_tag: "{{ v9_services_image_tag }}"
-  - name: core-agent-service
-    source_dir: "{{ anybackup_repo_root }}/Agent/service/core_agent"
-    dockerfile: Dockerfile
-    image_repository: core-agent-service
-    image_tag: "{{ v9_services_image_tag }}"
-  - name: agent-web
-    source_dir: "{{ anybackup_repo_root }}/Agent/portal"
-    dockerfile: Dockerfile
-    image_repository: agent-web
-    image_tag: "{{ v9_services_image_tag }}"
 v9_services_common_env:
   - name: APP_ENV
     value: alpha
@@ -380,6 +383,11 @@ core_agent_service:
     tokenSecretRef:
       name: core-agent-kweaver-token
       key: KWEAVER_TOKEN
+  foundation:
+    endpoint: "{{ core_agent_foundation_endpoint | default(foundation.endpoint | default('', true), true) }}"
+    ak: "{{ core_agent_foundation_ak | default(lookup('ansible.builtin.env', 'FOUNDATION_CLI_AK') | default('', true), true) }}"
+    sk: "{{ core_agent_foundation_sk | default(lookup('ansible.builtin.env', 'FOUNDATION_CLI_SK') | default('', true), true) }}"
+    prompt_for_credentials: "{{ core_agent_foundation_prompt_for_credentials | default(true) }}"
   presetAgents: "{{ preset_agents | default({}) }}"
   extraEnv: []
 
@@ -515,6 +523,41 @@ agent_content:
   kweaver_username: "{{ agent_content_kweaver_username | default('') }}"
   kweaver_password: "{{ agent_content_kweaver_password | default('') }}"
   kweaver_insecure: "{{ agent_content_kweaver_insecure | default(true) }}"
+  ensure_kweaver_role_memberships: "{{ agent_content_ensure_kweaver_role_memberships | default(true) }}"
+  kweaver_required_roles: "{{ agent_content_kweaver_required_roles | default(['数据管理员', 'AI管理员', '应用管理员']) }}"
+  bkn_business_domain:
+    reconcile: "{{ agent_content_bkn_business_domain_reconcile | default(true) }}"
+    disable_when_service_absent: "{{ agent_content_bkn_business_domain_disable_when_service_absent | default(true) }}"
+    namespace: "{{ agent_content_bkn_business_domain_namespace | default(kweaver.namespace) }}"
+    deployment_name: "{{ agent_content_bkn_business_domain_deployment_name | default('bkn-backend') }}"
+    container_name: "{{ agent_content_bkn_business_domain_container_name | default('bkn-backend') }}"
+    service_name: "{{ agent_content_bkn_business_domain_service_name | default('business-system-service') }}"
+    readiness_retries: "{{ agent_content_bkn_business_domain_readiness_retries | default(40) }}"
+    readiness_delay_seconds: "{{ agent_content_bkn_business_domain_readiness_delay_seconds | default(5) }}"
+  bkn_small_model:
+    reconcile: "{{ agent_content_bkn_small_model_reconcile | default(true) }}"
+    namespace: "{{ agent_content_bkn_small_model_namespace | default(kweaver.namespace) }}"
+    configmap_name: "{{ agent_content_bkn_small_model_configmap_name | default('bkn-backend-cm') }}"
+    config_key: "{{ agent_content_bkn_small_model_config_key | default('bkn-backend-config.yaml') }}"
+    deployment_name: "{{ agent_content_bkn_small_model_deployment_name | default('bkn-backend') }}"
+    default_enabled: "{{ agent_content_bkn_default_small_model_enabled | default(true) }}"
+    rollout_timeout: "{{ agent_content_bkn_small_model_rollout_timeout | default('180s') }}"
+  agent_operator_business_domain:
+    reconcile: "{{ agent_content_agent_operator_business_domain_reconcile | default(true) }}"
+    disable_when_service_absent: "{{ agent_content_agent_operator_business_domain_disable_when_service_absent | default(true) }}"
+    namespace: "{{ agent_content_agent_operator_business_domain_namespace | default(kweaver.namespace) }}"
+    deployment_name: "{{ agent_content_agent_operator_business_domain_deployment_name | default('agent-operator-integration') }}"
+    container_name: "{{ agent_content_agent_operator_business_domain_container_name | default('agent-operator-integration') }}"
+    service_name: "{{ agent_content_agent_operator_business_domain_service_name | default('business-system-service') }}"
+    readiness_delay_seconds: "{{ agent_content_agent_operator_business_domain_readiness_delay_seconds | default(10) }}"
+  agent_factory_business_domain:
+    reconcile: "{{ agent_content_agent_factory_business_domain_reconcile | default(true) }}"
+    disable_when_service_absent: "{{ agent_content_agent_factory_business_domain_disable_when_service_absent | default(true) }}"
+    namespace: "{{ agent_content_agent_factory_business_domain_namespace | default(kweaver.namespace) }}"
+    deployment_name: "{{ agent_content_agent_factory_business_domain_deployment_name | default('agent-factory') }}"
+    container_name: "{{ agent_content_agent_factory_business_domain_container_name | default('agent-factory') }}"
+    service_name: "{{ agent_content_agent_factory_business_domain_service_name | default('business-system-service') }}"
+    readiness_delay_seconds: "{{ agent_content_agent_factory_business_domain_readiness_delay_seconds | default(10) }}"
   required_commands:
     - python3
     - kweaver
@@ -544,16 +587,17 @@ agent_content:
   deploy_recovery_bkns: "{{ agent_content_deploy_recovery_bkns | default(true) }}"
   deploy_contextloader: "{{ agent_content_deploy_contextloader | default(true) }}"
   deploy_foundation_cli_skills: "{{ agent_content_deploy_foundation_cli_skills | default(true) }}"
+  deploy_skill_dependencies: "{{ agent_content_deploy_skill_dependencies | default(true) }}"
   deploy_recovery_agent: "{{ agent_content_deploy_recovery_agent | default(true) }}"
   publish_agents: "{{ agent_content_publish_agents | default(true) }}"
   contextloader_skill_name: "{{ agent_content_contextloader_skill_name | default('contextloader工具集') }}"
   contextloader:
-    base_url: "{{ agent_content_contextloader_base_url | default((agent_content_kweaver_base_url | default('', true)) or (kweaver_cli_effective_base_url | default('', true)) or (kweaver_cli_base_url | default('', true)) or (public_base_url | default('', true)), true) }}"
+    base_url: "{{ agent_content_contextloader_base_url | default((agent_content_kweaver_base_url | default('', true)) or (kweaver_cli_base_url | default('', true)) or (public_base_url | default('', true)), true) }}"
     toolbox_files: "{{ agent_content_contextloader_toolbox_files | default([remote_deploy_root ~ '/agent-content/anybackup-agent/context-loader/toolset/context_loader_toolset.adp', remote_deploy_root ~ '/agent-content/anybackup-agent/context-loader/tool-deps/execution_factory_tools.adp']) }}"
     import_mode: "{{ agent_content_contextloader_import_mode | default('upsert') }}"
     skip_verify: "{{ agent_content_contextloader_skip_verify | default(false) }}"
   foundation_cli_skills:
-    base_url: "{{ agent_content_foundation_cli_skills_base_url | default((agent_content_contextloader_base_url | default('', true)) or (kweaver_cli_effective_base_url | default('', true)) or (kweaver_cli_base_url | default('', true)) or (public_base_url | default('', true)), true) }}"
+    base_url: "{{ agent_content_foundation_cli_skills_base_url | default((agent_content_contextloader_base_url | default('', true)) or (kweaver_cli_base_url | default('', true)) or (public_base_url | default('', true)), true) }}"
     skills_root: "{{ agent_content_foundation_cli_skills_root | default(remote_deploy_root ~ '/agent-content/anybackup-agent/foundation-cli-skills/skills') }}"
     skill_dirs: "{{ agent_content_foundation_cli_skill_dirs | default([
       remote_deploy_root ~ '/agent-content/anybackup-agent/foundation-cli-skills/skills/client',
@@ -562,7 +606,8 @@ agent_content:
       remote_deploy_root ~ '/agent-content/anybackup-agent/foundation-cli-skills/skills/policy',
       remote_deploy_root ~ '/agent-content/anybackup-agent/foundation-cli-skills/skills/protect',
       remote_deploy_root ~ '/agent-content/anybackup-agent/foundation-cli-skills/skills/storage',
-      remote_deploy_root ~ '/agent-content/anybackup-agent/foundation-cli-skills/skills/timepoint'
+      remote_deploy_root ~ '/agent-content/anybackup-agent/foundation-cli-skills/skills/timepoint',
+      remote_deploy_root ~ '/agent-content/anybackup-agent/foundation-cli-skills/skills/ag-ui-response'
     ]) }}"
     source: "{{ agent_content_foundation_cli_skills_source | default('custom') }}"
     publish: "{{ agent_content_foundation_cli_skills_publish | default(true) }}"
@@ -570,6 +615,16 @@ agent_content:
     kweaver_config_path: "{{ agent_content_foundation_cli_skills_kweaver_config_path | default(kweaver.config_path) }}"
     resource_namespace: "{{ agent_content_foundation_cli_skills_resource_namespace | default(kweaver.resource_namespace) }}"
     state_file: "{{ agent_content_foundation_cli_skills_state_file | default(artifacts_root ~ '/anybackup-foundation-cli-skills.json') }}"
+  skill_dependencies:
+    namespace: "{{ agent_content_skill_dependencies_namespace | default(kweaver.namespace) }}"
+    service_name: "{{ agent_content_skill_dependencies_service_name | default('sandbox-control-plane') }}"
+    service_port: "{{ agent_content_skill_dependencies_service_port | default(8000) }}"
+    session_id: "{{ agent_content_skill_dependencies_session_id | default('') }}"
+    python_package_index_url: "{{ agent_content_skill_dependencies_python_package_index_url | default('https://pypi.tuna.tsinghua.edu.cn/simple') }}"
+    state_file: "{{ agent_content_skill_dependencies_state_file | default(artifacts_root ~ '/anybackup-skill-dependencies.json') }}"
+    skill_dirs: "{{ agent_content_skill_dependency_dirs | default([
+      remote_deploy_root ~ '/agent-content/anybackup-agent/foundation-cli-skills/skills/ag-ui-response'
+    ]) }}"
   vega:
     engine: "{{ agent_content_vega_engine | default('postgresql') }}"
     host: "{{ agent_content_vega_host | default(v9_infra.postgres.service_name ~ '.' ~ v9_infra.namespace ~ '.svc.cluster.local') }}"
@@ -582,13 +637,17 @@ agent_content:
     pod: "{{ agent_content_vega_pod | default('v9-infra-postgres-0') }}"
     postgres_username: "{{ agent_content_vega_postgres_username | default(v9_postgres_username) }}"
     import_mode: "{{ agent_content_vega_import_mode | default('kubectl') }}"
+    skip_kweaver_data_views: "{{ agent_content_vega_skip_kweaver_data_views | default(false) }}"
+    require_optional_services_for_dataviews: "{{ agent_content_vega_require_optional_services_for_dataviews | default(true) }}"
+    optional_service_namespace: "{{ agent_content_vega_optional_service_namespace | default(kweaver.namespace) }}"
+    optional_service_workloads: "{{ agent_content_vega_optional_service_workloads | default(kweaver_etrino.required_workloads | default(['vega-calculate-coordinator', 'vega-calculate-worker', 'vega-metadata', 'vega-datanode', 'vega-namenode-master'])) }}"
   foundation_vega:
-    enabled: "{{ agent_content_foundation_vega_enabled | default(false) }}"
+    enabled: "{{ agent_content_foundation_vega_enabled | default(true) }}"
     engine: "{{ agent_content_foundation_vega_engine | default('mariadb') }}"
     host: "{{ agent_content_foundation_vega_host | default((foundation.access_host | default('', true)) or (foundation.self_ip | default('', true)) or (ansible_default_ipv4.address | default('127.0.0.1')), true) }}"
     port: "{{ agent_content_foundation_vega_port | default(9602) }}"
-    username: "{{ agent_content_foundation_vega_username | default('v9agent2') }}"
-    password: "{{ agent_content_foundation_vega_password | default('') }}"
+    username: "{{ agent_content_foundation_vega_username | default('sdba') }}"
+    password: "{{ agent_content_foundation_vega_password | default(lookup('ansible.builtin.env', 'AGENT_CONTENT_FOUNDATION_VEGA_PASSWORD') | default('', true), true) }}"
     schema: "{{ agent_content_foundation_vega_schema | default('') }}"
 
 core_agent_service_token: dev-core-agent-token

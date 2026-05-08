@@ -1,18 +1,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "web-service.fullname" . }}
+  name: {{ include "agent-web.fullname" . }}
   labels:
-    {{- include "web-service.labels" . | nindent 4 }}
+    {{- include "agent-web.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      {{- include "web-service.selectorLabels" . | nindent 6 }}
+      {{- include "agent-web.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "web-service.selectorLabels" . | nindent 8 }}
+        {{- include "agent-web.selectorLabels" . | nindent 8 }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -29,11 +29,11 @@ spec:
         - name: web
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          volumeMounts:
-            - name: nginx-template
-              mountPath: /etc/nginx/templates/default.conf.template
-              subPath: default.conf.template
-              readOnly: true
+          env:
+            - name: AUTH_SERVICE_UPSTREAM
+              value: {{ .Values.authService.upstream | quote }}
+            - name: CONVERSATION_SERVICE_UPSTREAM
+              value: {{ .Values.conversationService.upstream | quote }}
           ports:
             - name: http
               containerPort: 80
@@ -68,7 +68,3 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      volumes:
-        - name: nginx-template
-          configMap:
-            name: {{ include "web-service.fullname" . }}-nginx

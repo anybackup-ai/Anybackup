@@ -132,10 +132,10 @@ def check_required_files(validator: Validator) -> None:
         Path("ansible/roles/internal/kweaver_online_install/tasks/main.yml"),
         Path("ansible/roles/internal/cleanup_core_validation/tasks/main.yml"),
         Path("ansible/roles/internal/verify_core_only/tasks/main.yml"),
-        Path("helm-chart/anybackup-agent/Chart.yaml"),
-        Path("helm-chart/anybackup-agent/charts/v9-infra/Chart.yaml"),
-        Path("helm-chart/anybackup-agent/charts/core-agent-service/Chart.yaml"),
-        Path("helm-chart/anybackup-agent/charts/v9-services/Chart.yaml"),
+        Path("../helm/v9-infra/Chart.yaml"),
+        Path("../helm/v9-infra/Chart.yaml"),
+        Path("../helm/core_agent/Chart.yaml"),
+        Path("../helm/conversation/Chart.yaml"),
         Path("images/load-images.sh"),
         Path("init-scripts/inject-cli-to-sandbox.sh"),
         Path("scripts/cleanup-kweaver-core-validation.sh"),
@@ -379,10 +379,10 @@ def helm_checks(validator: Validator) -> None:
         return
 
     charts = [
-        Path("helm-chart/anybackup-agent/charts/v9-infra"),
-        Path("helm-chart/anybackup-agent/charts/core-agent-service"),
-        Path("helm-chart/anybackup-agent/charts/v9-services"),
-        Path("helm-chart/anybackup-agent"),
+        Path("../helm/v9-infra"),
+        Path("../helm/core_agent"),
+        Path("../helm/conversation"),
+        Path("../helm/web"),
     ]
 
     for chart in charts:

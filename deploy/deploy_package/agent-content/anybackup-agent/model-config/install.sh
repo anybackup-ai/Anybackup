@@ -12,7 +12,16 @@ Options:
   --skip-small-models    Do not import small-model configs
 
 The script is idempotent by model name. Existing models are reused and mapped
-from source model_id to target model_id. API keys are never printed.
+from source model_id to target model_id. API keys are read from environment
+overrides when needed and are never printed.
+
+Model role environment overrides:
+  ANYBACKUP_LLM_NAME                Select the single LLM config to deploy
+  ANYBACKUP_LLM_API_KEY             API key for the selected LLM when creating it
+  ANYBACKUP_EMBEDDING_MODEL_NAME    Select the embedding small-model config
+  ANYBACKUP_EMBEDDING_API_KEY       API key for embedding create/update
+  ANYBACKUP_RERANKER_MODEL_NAME     Select the reranker small-model config
+  ANYBACKUP_RERANKER_API_KEY        API key for reranker adapter code
 USAGE
 }
 
@@ -76,6 +85,27 @@ if ! command -v kweaver-admin >/dev/null 2>&1; then
   exit 1
 fi
 
+resolve_kweaver_token() {
+  local value=""
+
+  if [[ -n "${KWEAVER_ADMIN_TOKEN:-}" || -n "${KWEAVER_TOKEN:-}" ]]; then
+    return 0
+  fi
+
+  if command -v kweaver >/dev/null 2>&1; then
+    value="$(kweaver token 2>/dev/null | tail -n 1 | tr -d '\r\n' || true)"
+    if [[ -z "$value" ]]; then
+      value="$(kweaver auth token 2>/dev/null | tail -n 1 | tr -d '\r\n' || true)"
+    fi
+  fi
+
+  if [[ -n "$value" ]]; then
+    export KWEAVER_TOKEN="$value"
+  fi
+}
+
+resolve_kweaver_token
+
 mkdir -p "$(dirname "$STATE_FILE")"
 
 python3 - "$CONFIG_DIR" "$BASE_URL" "$BIZ_DOMAIN" "$STATE_FILE" "$INSECURE" "$SKIP_SMALL_MODELS" <<'PY'
@@ -122,6 +152,21 @@ def decode_text(path: Path):
         except Exception as exc:  # noqa: BLE001
             last_error = exc
     raise ValueError(f"Unable to decode file {path}: {last_error}") from last_error
+
+
+def redact_secrets(value):
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            key_name = str(key).lower().replace("-", "_")
+            if key_name in {"api_key", "access_key", "secret_key", "token", "password"}:
+                redacted[key] = "<redacted>" if item else item
+            else:
+                redacted[key] = redact_secrets(item)
+        return redacted
+    if isinstance(value, list):
+        return [redact_secrets(item) for item in value]
+    return value
 
 
 def parse_json_text(text: str):
@@ -268,6 +313,10 @@ def run_json(args, *, check=True):
 
 
 def admin_token():
+    for key in ("KWEAVER_ADMIN_TOKEN", "KWEAVER_TOKEN"):
+        token = os.environ.get(key, "").strip()
+        if token:
+            return token
     proc = subprocess.run(admin_plain + ["auth", "token"], text=True, capture_output=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"Unable to read kweaver-admin token: {proc.stderr.strip()}")
@@ -425,23 +474,260 @@ def list_small_models_by_name(name):
     return [item for item in extract_items(obj) if model_name(item) == name]
 
 
-def adapter_code_for(item, small_dir: Path):
+models_path = config_dir / "models.json"
+models_config = read_json(models_path) if models_path.exists() else {}
+if not isinstance(models_config, dict):
+    models_config = {}
+
+roles_path = config_dir / "model-roles.json"
+if models_config:
+    model_roles = {
+        "llm": models_config.get("llm") or {},
+        "small_models": models_config.get("small_models") or {},
+    }
+else:
+    model_roles = read_json(roles_path) if roles_path.exists() else {}
+if not isinstance(model_roles, dict):
+    model_roles = {}
+
+
+def full_model_id(item: dict, fallback: str = ""):
+    return first_value(item, ("source_model_id", "source_id", "model_id", "id", "modelId")) or fallback
+
+
+def full_llm_item(item: dict):
+    cfg = item.get("model_config") or {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    source_id = full_model_id(item, first_value(item, ("role",)) or "primary")
+    name = first_value(item, ("model_name", "name"))
+    api_url = first_value(item, ("api_url", "api_base", "base_url", "url")) or first_value(
+        cfg, ("api_url", "api_base", "base_url", "url")
+    )
+    api_model = first_value(item, ("api_model", "model")) or first_value(
+        cfg, ("api_model", "model", "model_name")
+    )
+    series = first_value(item, ("model_series", "series"))
+    if not (name and series and api_url and api_model):
+        raise RuntimeError(
+            "models.json llm requires model_name, model_series, api_url, and api_model"
+        )
+    return {
+        "model_id": source_id,
+        "model_name": name,
+        "model_series": series,
+        "model_type": first_value(item, ("model_type", "type")) or "llm",
+        "model_config": {
+            "api_model": api_model,
+            "api_url": api_url,
+            "api_base": api_url,
+            "api_key": first_value(item, ("api_key",)) or first_value(cfg, ("api_key", "key")),
+        },
+        "max_model_len": int_value(item.get("max_model_len"), default=4096),
+        "model_parameters": item.get("model_parameters"),
+    }
+
+
+def full_small_item(role_name: str, item: dict):
+    cfg = item.get("model_config") or {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    source_id = full_model_id(item, role_name)
+    name = first_value(item, ("model_name", "name"))
+    model_type_value = first_value(item, ("model_type", "type")) or role_name
+    if not (name and model_type_value):
+        raise RuntimeError(
+            f"models.json small_models.{role_name} requires model_name and model_type"
+        )
+    kind = first_value(item, ("kind", "mode")) or ("adapter" if item.get("adapter") else "api")
+    adapter_enabled = kind == "adapter" or bool(item.get("adapter"))
+    result = {
+        "model_id": source_id,
+        "model_name": name,
+        "model_type": model_type_value,
+        "kind": kind,
+        "adapter": adapter_enabled,
+        "adapter_code": item.get("adapter_code"),
+        "adapter_code_file": item.get("adapter_code_file"),
+        "model_config": {
+            "api_model": first_value(item, ("api_model", "model")) or first_value(
+                cfg, ("api_model", "model", "model_name")
+            ),
+            "api_url": first_value(item, ("api_url", "api_base", "base_url", "url")) or first_value(
+                cfg, ("api_url", "api_base", "base_url", "url")
+            ),
+            "api_key": first_value(item, ("api_key",)) or first_value(cfg, ("api_key", "key")),
+        },
+        "batch_size": int_value(item.get("batch_size"), cfg.get("batch_size"), default=100),
+        "max_tokens": int_value(item.get("max_tokens"), item.get("max_model_len"), cfg.get("max_tokens")),
+        "embedding_dim": int_value(item.get("embedding_dim"), item.get("dimension"), cfg.get("embedding_dim")),
+    }
+    if not result["adapter"] and not (result["model_config"]["api_model"] and result["model_config"]["api_url"]):
+        raise RuntimeError(
+            f"models.json small_models.{role_name} requires api_url and api_model for non-adapter models"
+        )
+    return result
+
+
+def full_small_items():
+    small_models = models_config.get("small_models") or {}
+    if isinstance(small_models, dict):
+        missing = [name for name in ("embedding", "reranker") if not isinstance(small_models.get(name), dict)]
+        if missing:
+            raise RuntimeError("models.json small_models requires embedding and reranker entries")
+        items = []
+        for role_name in ("embedding", "reranker"):
+            role_config = small_models.get(role_name)
+            if isinstance(role_config, dict):
+                items.append((models_path, full_small_item(role_name, role_config)))
+        for role_name, role_config in small_models.items():
+            if role_name in ("embedding", "reranker"):
+                continue
+            if isinstance(role_config, dict):
+                items.append((models_path, full_small_item(str(role_name), role_config)))
+        return items
+    if isinstance(small_models, list):
+        return [
+            (models_path, full_small_item(str(index), item))
+            for index, item in enumerate(small_models)
+            if isinstance(item, dict)
+        ]
+    return []
+
+
+def role_env(role: dict, fallback: str):
+    if isinstance(role, dict):
+        configured = str(role.get("api_key_env") or "").strip()
+        if configured:
+            return configured
+    return fallback
+
+
+def role_api_key(role: dict):
+    if not isinstance(role, dict):
+        return ""
+    cfg = role.get("model_config") or {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    value = first_value(role, ("api_key", "key")) or first_value(cfg, ("api_key", "key"))
+    return "" if looks_masked(value) else value
+
+
+def env_secret(*names):
+    for name in names:
+        if not name:
+            continue
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def llm_role():
+    role = model_roles.get("llm") or {}
+    return role if isinstance(role, dict) else {}
+
+
+def selected_llm_name():
+    role = llm_role()
+    return (
+        os.environ.get("ANYBACKUP_LLM_NAME", "").strip()
+        or str(role.get("model_name") or role.get("name") or "").strip()
+    )
+
+
+def llm_api_key_override():
+    return env_secret("ANYBACKUP_LLM_API_KEY", role_env(llm_role(), ""))
+
+
+def small_model_roles():
+    roles = model_roles.get("small_models") or {}
+    return roles if isinstance(roles, dict) else {}
+
+
+def small_model_role_for(name: str, model_type_value: str):
+    roles = small_model_roles()
+    typed = roles.get(model_type_value)
+    if isinstance(typed, dict):
+        return typed
+    for role in roles.values():
+        if isinstance(role, dict) and str(role.get("model_name") or role.get("name") or "") == name:
+            return role
+    return {}
+
+
+def selected_small_model_names():
+    roles = small_model_roles()
+    selected = {}
+    defaults = {
+        "embedding": os.environ.get("ANYBACKUP_EMBEDDING_MODEL_NAME", "").strip(),
+        "reranker": os.environ.get("ANYBACKUP_RERANKER_MODEL_NAME", "").strip(),
+    }
+    for role_name in ("embedding", "reranker"):
+        role = roles.get(role_name) or {}
+        if not isinstance(role, dict):
+            role = {}
+        selected[role_name] = (
+            defaults[role_name]
+            or str(role.get("model_name") or role.get("name") or "").strip()
+        )
+    return {key: value for key, value in selected.items() if value}
+
+
+def small_model_api_key_override(name: str, model_type_value: str):
+    role = small_model_role_for(name, model_type_value)
+    if model_type_value == "embedding":
+        return env_secret("ANYBACKUP_EMBEDDING_API_KEY", role_env(role, "")) or role_api_key(role)
+    if model_type_value == "reranker":
+        return env_secret("ANYBACKUP_RERANKER_API_KEY", role_env(role, "")) or role_api_key(role)
+    return env_secret(role_env(role, "")) or role_api_key(role)
+
+
+def adapter_code_for(item, small_dir: Path, name: str, model_type_value: str):
+    configured = first_value(item, ("adapter_code_file", "adapter_file"))
+    candidates = []
+    if configured:
+        configured_path = Path(configured)
+        if configured_path.is_absolute():
+            candidates.append(configured_path)
+        else:
+            candidates.append(config_dir / configured_path)
+            candidates.append(small_dir / configured_path)
+    candidates.append(small_dir / "small-model-adapter.txt")
+    for candidate in candidates:
+        if candidate.exists():
+            code = decode_text(candidate)
+            if code.strip():
+                return adapter_code_with_secret(code, name, model_type_value)
     code = item.get("adapter_code")
     if isinstance(code, str) and code.strip():
-        return code
-    fallback = small_dir / "small-model-adapter.txt"
-    if fallback.exists():
-        code = decode_text(fallback)
-        if code.strip():
-            return code
+        return adapter_code_with_secret(code, name, model_type_value)
     return ""
+
+
+def adapter_code_with_secret(code: str, name: str, model_type_value: str):
+    secret = small_model_api_key_override(name, model_type_value)
+    if secret:
+        literal = json.dumps(secret)
+        code = code.replace("__ANYBACKUP_RERANKER_API_KEY__", secret)
+        code = re.sub(
+            r'(DASHSCOPE_API_KEY\s*=\s*)["\'][^"\']*["\']',
+            lambda match: match.group(1) + literal,
+            code,
+        )
+        return code
+    if "__ANYBACKUP_RERANKER_API_KEY__" in code:
+        role = small_model_role_for(name, model_type_value)
+        env_name = role_env(role, "ANYBACKUP_RERANKER_API_KEY")
+        raise RuntimeError(f"Adapter small model {name} requires environment variable {env_name}")
+    return code
 
 
 def adapter_small_model_body(item, small_dir: Path, name: str, model_type_value: str):
     cfg = item.get("model_config") or item.get("config") or {}
     if not isinstance(cfg, dict):
         cfg = {}
-    adapter_code = adapter_code_for(item, small_dir)
+    adapter_code = adapter_code_for(item, small_dir, name, model_type_value)
     if not (name and model_type_value and adapter_code):
         raise RuntimeError(f"Adapter small model {name or 'unknown'} has incomplete config")
 
@@ -477,6 +763,8 @@ def adapter_small_model_body(item, small_dir: Path, name: str, model_type_value:
 state = {
     "base_url": base_url,
     "business_domain": biz_domain,
+    "models_config_file": str(models_path) if models_config else "",
+    "model_roles": redact_secrets(model_roles),
     "llm": {},
     "small_model": {},
     "warnings": [],
@@ -485,7 +773,9 @@ state = {
 llm_dir = config_dir / "llm"
 llm_configs = []
 api_key_by_host = {}
-if llm_dir.is_dir():
+if isinstance(models_config.get("llm"), dict):
+    llm_configs.append((models_path, full_llm_item(models_config["llm"])))
+elif llm_dir.is_dir():
     for path in sorted(llm_dir.glob("*.json")):
         try:
             obj = read_json(path)
@@ -495,6 +785,22 @@ if llm_dir.is_dir():
         if isinstance(obj, dict) and obj.get("model_config") and model_id(obj) and model_name(obj):
             llm_configs.append((path, obj))
 
+selected_llm = selected_llm_name()
+if selected_llm:
+    filtered_llm_configs = [(path, item) for path, item in llm_configs if model_name(item) == selected_llm]
+    if not filtered_llm_configs:
+        available = ", ".join(model_name(item) for _, item in llm_configs if model_name(item)) or "none"
+        raise RuntimeError(f"Selected LLM {selected_llm} was not found in config. Available: {available}")
+    llm_configs = filtered_llm_configs
+elif len(llm_configs) > 1:
+    available = ", ".join(model_name(item) for _, item in llm_configs if model_name(item))
+    raise RuntimeError(
+        "Multiple LLM configs are packaged. Set models.json llm.model_name, model-roles.json llm.model_name, "
+        f"or ANYBACKUP_LLM_NAME to select exactly one. Available: {available}"
+    )
+if not llm_configs:
+    raise RuntimeError("No LLM config found. Provide models.json llm or a selected llm/*.json config.")
+
 for path, item in llm_configs:
     source_id = model_id(item)
     name = model_name(item)
@@ -503,19 +809,28 @@ for path, item in llm_configs:
     api_model = first_value(cfg, ("api_model", "model", "model_name"))
     api_base = first_value(cfg, ("api_url", "api_base", "base_url", "url"))
     api_key = first_value(cfg, ("api_key", "key"))
+    override_key = llm_api_key_override()
+    if override_key:
+        api_key = override_key
     api_host = urlparse(api_base).netloc if api_base else ""
-
-    if not (name and api_model and api_base and api_key) or looks_masked(api_key):
-        state["warnings"].append(f"Skip LLM {name or path.name}: incomplete or masked config")
-        continue
-    if api_host:
+    if api_host and api_key and not looks_masked(api_key):
         api_key_by_host.setdefault(api_host, api_key)
 
     existing = list_llms_by_name(name)
     if existing:
         target = existing[0]
         print(f"Reuse existing LLM: {name}")
+        if override_key:
+            state["warnings"].append(
+                f"LLM {name} already exists; KWeaver admin API does not support secret update in this installer path"
+            )
     else:
+        if not (name and api_model and api_base and api_key) or looks_masked(api_key):
+            env_name = role_env(llm_role(), "ANYBACKUP_LLM_API_KEY")
+            raise RuntimeError(
+                f"LLM {name or path.name} cannot be created with incomplete or masked config. "
+                f"Set {env_name} or pre-create a same-name LLM in KWeaver."
+            )
         print(f"Create LLM: {name}")
         body = {
             "model_name": name,
@@ -548,7 +863,9 @@ for path, item in llm_configs:
 if not skip_small_models:
     small_dir = config_dir / "small-model"
     small_configs = []
-    if small_dir.is_dir():
+    if models_config.get("small_models"):
+        small_configs = full_small_items()
+    elif small_dir.is_dir():
         for path in sorted(small_dir.glob("*.json")):
             try:
                 obj = read_json(path)
@@ -562,6 +879,25 @@ if not skip_small_models:
                 for item in extract_items(obj):
                     if isinstance(item, dict) and model_id(item) and model_name(item):
                         small_configs.append((path, item))
+
+    selected_small = selected_small_model_names()
+    if selected_small:
+        selected_names = set(selected_small.values())
+        filtered_small_configs = [
+            (path, item) for path, item in small_configs if model_name(item) in selected_names
+        ]
+        found_names = {model_name(item) for _, item in filtered_small_configs}
+        missing_roles = [
+            f"{role}={name}" for role, name in selected_small.items() if name not in found_names
+        ]
+        if missing_roles:
+            available = ", ".join(model_name(item) for _, item in small_configs if model_name(item)) or "none"
+            raise RuntimeError(
+                "Selected small-model config was not found: "
+                + ", ".join(missing_roles)
+                + f". Available: {available}"
+            )
+        small_configs = filtered_small_configs
 
     seen_small = set()
     for path, item in small_configs:
@@ -619,6 +955,9 @@ if not skip_small_models:
         api_model = first_value(cfg, ("api_model", "model", "model_name"))
         api_url = first_value(cfg, ("api_url", "api_base", "base_url", "url"))
         api_key = first_value(cfg, ("api_key", "key"))
+        override_key = small_model_api_key_override(name, model_type_value)
+        if override_key:
+            api_key = override_key
         batch_size = first_value(cfg, ("batch_size",)) or first_value(item, ("batch_size",)) or "2048"
         max_tokens = first_value(cfg, ("max_tokens", "max_model_len")) or first_value(item, ("max_tokens",)) or "512"
         embedding_dim = first_value(cfg, ("embedding_dim", "dimension", "dim")) or first_value(item, ("embedding_dim",)) or "768"
@@ -640,7 +979,29 @@ if not skip_small_models:
         existing = list_small_models_by_name(name)
         if existing:
             target = existing[0]
-            print(f"Reuse existing small model: {name}")
+            if override_key:
+                print(f"Update existing small model config: {name}")
+                update_body = {
+                    "model_id": model_id(target),
+                    "model_name": name,
+                    "model_type": model_type_value,
+                    "change": True,
+                    "model_config": {
+                        "api_url": api_url,
+                        "api_model": api_model,
+                        "api_key": api_key,
+                    },
+                    "batch_size": int(batch_size),
+                    "max_tokens": int(max_tokens),
+                    "embedding_dim": int(embedding_dim),
+                }
+                post_json("/api/mf-model-manager/v1/small-model/edit", update_body)
+                matches = list_small_models_by_name(name)
+                if not matches:
+                    raise RuntimeError(f"Unable to resolve updated small model id for {name}")
+                target = matches[0]
+            else:
+                print(f"Reuse existing small model: {name}")
         else:
             print(f"Create small model: {name}")
             run_json(

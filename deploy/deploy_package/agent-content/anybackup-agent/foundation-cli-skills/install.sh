@@ -21,8 +21,14 @@ Options:
   --kweaver-config <p>  KWeaver deploy config used for publish schema checks.
   --resource-namespace <ns>
                         KWeaver resource namespace (default: resource).
+  --kweaver-namespace <ns>
+                        KWeaver application namespace (default: kweaver).
   --skip-publish-schema-check
                         Do not create missing KWeaver skill publish tables.
+  --skip-auth-policy-check
+                        Do not create missing KWeaver skill authorization policy.
+  --skip-oss-storage-check
+                        Do not create missing KWeaver OSS Gateway default storage.
   --insecure            Tell KWeaver CLI to skip TLS verification where supported.
   -h, --help            Show this help.
 
@@ -36,8 +42,13 @@ Environment variables:
   ANYBACKUP_SKILLS_PUBLISH   1 or 0. Default: 1.
   ANYBACKUP_SKILLS_ENSURE_PUBLISH_SCHEMA
                              1 or 0. Default: 1.
+  ANYBACKUP_SKILLS_ENSURE_AUTH_POLICY
+                             1 or 0. Default: 1.
+  ANYBACKUP_SKILLS_ENSURE_OSS_STORAGE
+                             1 or 0. Default: 1.
   KWEAVER_CONFIG_PATH        Default: /opt/v9-alpha-deploy/kweaver-config/config.yaml.
   KWEAVER_RESOURCE_NAMESPACE Default: resource.
+  KWEAVER_NAMESPACE          Default: kweaver.
   KWEAVER_INSECURE           1 or 0.
 EOF
 }
@@ -62,8 +73,11 @@ STATE_FILE="${ANYBACKUP_SKILLS_STATE_FILE:-}"
 SKILL_SOURCE="${ANYBACKUP_SKILLS_SOURCE:-custom}"
 PUBLISH="${ANYBACKUP_SKILLS_PUBLISH:-1}"
 ENSURE_PUBLISH_SCHEMA="${ANYBACKUP_SKILLS_ENSURE_PUBLISH_SCHEMA:-1}"
+ENSURE_AUTH_POLICY="${ANYBACKUP_SKILLS_ENSURE_AUTH_POLICY:-1}"
+ENSURE_OSS_STORAGE="${ANYBACKUP_SKILLS_ENSURE_OSS_STORAGE:-1}"
 KWEAVER_CONFIG_PATH="${KWEAVER_CONFIG_PATH:-/opt/v9-alpha-deploy/kweaver-config/config.yaml}"
 KWEAVER_RESOURCE_NAMESPACE="${KWEAVER_RESOURCE_NAMESPACE:-resource}"
+KWEAVER_NAMESPACE="${KWEAVER_NAMESPACE:-kweaver}"
 KWEAVER_INSECURE="${KWEAVER_INSECURE:-0}"
 
 while [[ $# -gt 0 ]]; do
@@ -108,8 +122,20 @@ while [[ $# -gt 0 ]]; do
       KWEAVER_RESOURCE_NAMESPACE="${2:-}"
       shift 2
       ;;
+    --kweaver-namespace)
+      KWEAVER_NAMESPACE="${2:-}"
+      shift 2
+      ;;
     --skip-publish-schema-check)
       ENSURE_PUBLISH_SCHEMA="0"
+      shift
+      ;;
+    --skip-auth-policy-check)
+      ENSURE_AUTH_POLICY="0"
+      shift
+      ;;
+    --skip-oss-storage-check)
+      ENSURE_OSS_STORAGE="0"
       shift
       ;;
     --insecure)
@@ -145,13 +171,16 @@ for dir in "${SKILL_DIRS[@]}"; do
   [[ -f "$dir/SKILL.md" ]] || error "Missing SKILL.md in skill directory: $dir"
 done
 
-python3 - "$KWEAVER_BASE_URL" "$KWEAVER_BUSINESS_DOMAIN" "$STATE_FILE" "$SKILL_SOURCE" "$PUBLISH" "$KWEAVER_INSECURE" "$ENSURE_PUBLISH_SCHEMA" "$KWEAVER_CONFIG_PATH" "$KWEAVER_RESOURCE_NAMESPACE" "${SKILL_DIRS[@]}" <<'PY'
+python3 - "$KWEAVER_BASE_URL" "$KWEAVER_BUSINESS_DOMAIN" "$STATE_FILE" "$SKILL_SOURCE" "$PUBLISH" "$KWEAVER_INSECURE" "$ENSURE_PUBLISH_SCHEMA" "$ENSURE_AUTH_POLICY" "$ENSURE_OSS_STORAGE" "$KWEAVER_CONFIG_PATH" "$KWEAVER_RESOURCE_NAMESPACE" "$KWEAVER_NAMESPACE" "${SKILL_DIRS[@]}" <<'PY'
+import base64
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -163,13 +192,18 @@ from pathlib import Path
     publish_flag,
     insecure_flag,
     ensure_publish_schema_flag,
+    ensure_auth_policy_flag,
+    ensure_oss_storage_flag,
     kweaver_config_path,
     resource_namespace,
+    kweaver_namespace,
     *skill_dirs,
 ) = sys.argv[1:]
 publish = publish_flag == "1"
 insecure = insecure_flag == "1"
 ensure_publish_schema = ensure_publish_schema_flag == "1"
+ensure_auth_policy = ensure_auth_policy_flag == "1"
+ensure_oss_storage = ensure_oss_storage_flag == "1"
 
 env = os.environ.copy()
 env["KWEAVER_BASE_URL"] = base_url
@@ -186,6 +220,21 @@ help_proc = subprocess.run(
     env=env,
 )
 supports_base_url = "--base-url" in (help_proc.stdout + help_proc.stderr)
+
+AUTH_OPERATION_CHECK_PATH = "/api/authorization/v1/operation-check"
+AUTH_POLICY_PATH = "/api/authorization/v1/policy"
+AUTH_RESOURCE_TYPE_PATH_PREFIX = "/api/authorization/v1/resource_type"
+AUTH_SKILL_OPERATIONS = (
+    "create",
+    "modify",
+    "delete",
+    "view",
+    "publish",
+    "unpublish",
+    "authorize",
+    "public_access",
+    "execute",
+)
 
 
 def log(message: str) -> None:
@@ -207,6 +256,25 @@ def run_kweaver(args, check=True):
     return proc
 
 
+def run_kweaver_auth(args, check=True):
+    # Auth subcommands in the 0.6.x CLI use saved sessions only when no
+    # transient base-url override is present. Keep this path separate from
+    # API calls, which still use --base-url.
+    cmd = ["kweaver"]
+    cmd.extend(args)
+    auth_env = env.copy()
+    auth_env.pop("KWEAVER_BASE_URL", None)
+    auth_env.pop("KWEAVER_BUSINESS_DOMAIN", None)
+    proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=auth_env)
+    if check and proc.returncode != 0:
+        raise RuntimeError(
+            "KWeaver auth CLI failed: "
+            + " ".join(cmd)
+            + f"\nrc={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}"
+        )
+    return proc
+
+
 def run_cmd(args, *, check=True, input_text=None, safe_name="command"):
     proc = subprocess.run(
         args,
@@ -222,6 +290,488 @@ def run_cmd(args, *, check=True, input_text=None, safe_name="command"):
             + f"\nrc={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}"
         )
     return proc
+
+
+def first_value(item: dict, keys) -> str:
+    for key in keys:
+        value = item.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def parse_accessor_from_text(text: str) -> dict:
+    payload = parse_json_payload(text)
+    candidates = []
+    if isinstance(payload, dict):
+        candidates.append(payload)
+        for key in ("data", "user", "account", "profile"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                candidates.append(value)
+    for item in candidates:
+        user_id = first_value(item, ("id", "user_id", "userId", "account_id", "accountId", "sub"))
+        user_name = first_value(item, ("name", "username", "user_name", "account", "account_name", "preferred_username"))
+        if user_id:
+            return {"id": str(user_id), "type": "user", "name": str(user_name or user_id)}
+
+    patterns = (
+        r"User:\s*(?P<name>.*?)\s*\((?P<id>[0-9A-Za-z_-]{8,})\)",
+        r"User ID:\s*(?P<id>[0-9A-Za-z_-]{8,})",
+        r"User:\s*(?P<id>[0-9A-Za-z_-]{8,})",
+        r"sub:\s*(?P<id>[0-9A-Za-z_-]{8,})",
+    )
+    user_id = None
+    user_name = None
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match and match.groupdict().get("id"):
+            user_id = match.group("id").strip()
+            if match.groupdict().get("name"):
+                user_name = match.group("name").strip()
+            break
+    if not user_name:
+        match = re.search(r"(?:Username|Name|User name):\s*(?P<name>[^\r\n]+)", text, re.IGNORECASE)
+        if match:
+            user_name = match.group("name").strip()
+    if user_id:
+        return {"id": user_id, "type": "user", "name": user_name or user_id}
+    return {}
+
+
+def current_kweaver_accessor() -> dict:
+    for args in (["auth", "whoami"], ["auth", "status"]):
+        proc = run_kweaver_auth(args, check=False)
+        if proc.returncode != 0:
+            continue
+        accessor = parse_accessor_from_text(proc.stdout + "\n" + proc.stderr)
+        if accessor.get("id"):
+            return accessor
+    raise RuntimeError(
+        "Unable to resolve current KWeaver user id. "
+        "Run `kweaver auth status` on the target host and confirm the login is usable."
+    )
+
+
+def kubectl_json(args, *, safe_name: str):
+    proc = run_cmd(["kubectl", *args], safe_name=safe_name)
+    return json.loads(proc.stdout)
+
+
+def get_service(namespace: str, service_names, *, name_contains=(), safe_name: str):
+    for name in service_names:
+        proc = run_cmd(
+            ["kubectl", "get", "svc", "-n", namespace, name, "-o", "json"],
+            check=False,
+            safe_name=f"kubectl get svc/{name}",
+        )
+        if proc.returncode == 0:
+            return json.loads(proc.stdout)
+
+    payload = kubectl_json(["get", "svc", "-n", namespace, "-o", "json"], safe_name=safe_name)
+    candidates = []
+    for item in payload.get("items", []):
+        name = item.get("metadata", {}).get("name", "")
+        if any(token in name for token in name_contains):
+            candidates.append(item)
+    candidates.sort(key=lambda item: item.get("metadata", {}).get("name", ""))
+    if candidates:
+        return candidates[0]
+    return None
+
+
+def service_port(service: dict, *, preferred_names=(), preferred_ports=()) -> int:
+    ports = service.get("spec", {}).get("ports") or []
+    if not ports:
+        name = service.get("metadata", {}).get("name", "")
+        raise RuntimeError(f"Service {name} has no ports")
+    for candidate in ports:
+        if str(candidate.get("name", "")).lower() in preferred_names:
+            port = candidate.get("port")
+            if port:
+                return int(port)
+    for candidate in ports:
+        port = candidate.get("port")
+        if port in preferred_ports:
+            return int(port)
+    port = ports[0].get("port")
+    if not port:
+        name = service.get("metadata", {}).get("name", "")
+        raise RuntimeError(f"Service {name} has no usable port")
+    return int(port)
+
+
+def discover_authorization_base_url(namespace: str) -> str:
+    service_names = ("authorization-private", "authorization", "authorization-public")
+    services = []
+    for name in service_names:
+        proc = run_cmd(
+            ["kubectl", "get", "svc", "-n", namespace, name, "-o", "json"],
+            check=False,
+            safe_name=f"kubectl get svc/{name}",
+        )
+        if proc.returncode == 0:
+            services.append(json.loads(proc.stdout))
+            break
+    if not services:
+        payload = kubectl_json(["get", "svc", "-n", namespace, "-o", "json"], safe_name="kubectl get authorization services")
+        for item in payload.get("items", []):
+            name = item.get("metadata", {}).get("name", "")
+            if "authorization" in name:
+                services.append(item)
+        services.sort(key=lambda item: item.get("metadata", {}).get("name", ""))
+    if not services:
+        raise RuntimeError(f"Unable to find authorization service in namespace {namespace}")
+
+    service = services[0]
+    name = service.get("metadata", {}).get("name", "")
+    spec = service.get("spec", {})
+    cluster_ip = spec.get("clusterIP")
+    if not cluster_ip or cluster_ip == "None":
+        raise RuntimeError(f"Authorization service {namespace}/{name} has no usable ClusterIP")
+    ports = spec.get("ports") or []
+    if not ports:
+        raise RuntimeError(f"Authorization service {namespace}/{name} has no ports")
+    port = None
+    for candidate in ports:
+        if str(candidate.get("name", "")).lower() in ("http", "private", "tcp"):
+            port = candidate.get("port")
+            break
+    if port is None:
+        port = ports[0].get("port")
+    if not port:
+        raise RuntimeError(f"Authorization service {namespace}/{name} has no usable port")
+    return f"http://{cluster_ip}:{port}"
+
+
+def post_json(url: str, payload, *, expected_statuses=(200,)):
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            if resp.status not in expected_statuses:
+                raise RuntimeError(f"HTTP {resp.status} from {url}: {body}")
+            return resp.status, body
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code} from {url}: {body}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Unable to call {url}: {exc}") from exc
+
+
+def get_json(url: str, *, expected_statuses=(200,)):
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            if resp.status not in expected_statuses:
+                raise RuntimeError(f"HTTP {resp.status} from {url}: {body}")
+            return resp.status, body
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code} from {url}: {body}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Unable to call {url}: {exc}") from exc
+
+
+def put_json(url: str, payload, *, expected_statuses=(200, 201, 204)):
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            if resp.status not in expected_statuses:
+                raise RuntimeError(f"HTTP {resp.status} from {url}: {body}")
+            return resp.status, body
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code} from {url}: {body}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Unable to call {url}: {exc}") from exc
+
+
+def ensure_authorization_resource_type(auth_base_url: str, resource_type: str) -> None:
+    def operation_name(op: str) -> str:
+        return {
+            "create": "Create",
+            "modify": "Modify",
+            "delete": "Delete",
+            "view": "View",
+            "publish": "Publish",
+            "unpublish": "Unpublish",
+            "authorize": "Authorize",
+            "public_access": "Public Access",
+            "execute": "Execute",
+        }.get(op, op)
+
+    payload = {
+        "name": "Skill",
+        "description": "Execution Factory Skill",
+        "instance_url": "",
+        "data_struct": "string",
+        "operation": [
+            {
+                "id": op,
+                "name": [
+                    {"language": "zh-cn", "value": operation_name(op)},
+                    {"language": "en-us", "value": operation_name(op)},
+                    {"language": "zh-tw", "value": operation_name(op)},
+                ],
+                "description": "",
+                "scope": ["type", "instance"],
+            }
+            for op in AUTH_SKILL_OPERATIONS
+        ],
+        "hidden": False,
+    }
+    put_json(f"{auth_base_url}{AUTH_RESOURCE_TYPE_PATH_PREFIX}/{resource_type}", payload)
+
+
+def authorization_operation_check(auth_base_url: str, accessor: dict, resource_type: str, operation: str) -> bool:
+    payload = {
+        "accessor": accessor,
+        "resource": {"id": "*", "type": resource_type, "name": "*"},
+        "operation": [operation],
+        "method": "GET",
+    }
+    _, body = post_json(f"{auth_base_url}{AUTH_OPERATION_CHECK_PATH}", payload, expected_statuses=(200,))
+    result = json.loads(body or "{}")
+    return bool(result.get("result"))
+
+
+def create_authorization_policy(auth_base_url: str, accessor: dict, resource_type: str) -> None:
+    payload = [
+        {
+            "accessor": accessor,
+            "resource": {"id": "*", "type": resource_type, "name": "*"},
+            "operation": {
+                "allow": [{"id": op, "name": op} for op in AUTH_SKILL_OPERATIONS],
+                "deny": [],
+            },
+        }
+    ]
+    post_json(f"{auth_base_url}{AUTH_POLICY_PATH}", payload, expected_statuses=(204,))
+
+
+def ensure_execution_factory_auth_policy() -> bool:
+    if not ensure_auth_policy:
+        return False
+
+    accessor = current_kweaver_accessor()
+    auth_base_url = discover_authorization_base_url(kweaver_namespace)
+    ensure_authorization_resource_type(auth_base_url, "skill")
+    required_ops = ("create", "publish")
+    missing_before = [
+        op
+        for op in required_ops
+        if not authorization_operation_check(auth_base_url, accessor, "skill", op)
+    ]
+    if not missing_before:
+        log(f"KWeaver skill authorization policy already usable for {accessor['name']} ({accessor['id']})")
+        return False
+
+    create_authorization_policy(auth_base_url, accessor, "skill")
+    missing_after = [
+        op
+        for op in required_ops
+        if not authorization_operation_check(auth_base_url, accessor, "skill", op)
+    ]
+    if missing_after:
+        raise RuntimeError(
+            "KWeaver skill authorization policy bootstrap did not take effect. "
+            f"Missing operations for {accessor['id']}: {', '.join(missing_after)}"
+        )
+    log(f"Ensured KWeaver skill authorization policy for {accessor['name']} ({accessor['id']})")
+    return True
+
+
+def discover_oss_gateway_base_url(namespace: str) -> str:
+    service = get_service(
+        namespace,
+        ("oss-gateway-backend",),
+        name_contains=("oss-gateway",),
+        safe_name="kubectl get oss-gateway-backend services",
+    )
+    if not service:
+        raise RuntimeError(f"Unable to find oss-gateway-backend service in namespace {namespace}")
+    name = service.get("metadata", {}).get("name", "")
+    cluster_ip = service.get("spec", {}).get("clusterIP")
+    if not cluster_ip or cluster_ip == "None":
+        raise RuntimeError(f"oss-gateway-backend service {namespace}/{name} has no usable ClusterIP")
+    port = service_port(service, preferred_names=("http", "tcp"), preferred_ports=(8080,))
+    return f"http://{cluster_ip}:{port}"
+
+
+def service_pods(namespace: str, service: dict) -> list:
+    selector = service.get("spec", {}).get("selector") or {}
+    if not selector:
+        return []
+    label_selector = ",".join(f"{key}={value}" for key, value in sorted(selector.items()))
+    payload = kubectl_json(
+        ["get", "pods", "-n", namespace, "-l", label_selector, "-o", "json"],
+        safe_name=f"kubectl get pods for service {service.get('metadata', {}).get('name', '')}",
+    )
+    pods = []
+    for item in payload.get("items", []):
+        status = item.get("status", {})
+        conditions = status.get("conditions", [])
+        ready = any(
+            condition.get("type") == "Ready" and condition.get("status") == "True"
+            for condition in conditions
+        )
+        phase = status.get("phase") == "Running"
+        name = item.get("metadata", {}).get("name", "")
+        pods.append((phase and ready, name, item))
+    pods.sort(reverse=True, key=lambda item: (item[0], item[1]))
+    return [item for _, _, item in pods]
+
+
+def secret_value(namespace: str, secret_name: str, secret_key: str) -> str:
+    payload = kubectl_json(
+        ["get", "secret", "-n", namespace, secret_name, "-o", "json"],
+        safe_name=f"kubectl get secret/{secret_name}",
+    )
+    encoded = (payload.get("data") or {}).get(secret_key)
+    if not encoded:
+        raise RuntimeError(f"Secret {namespace}/{secret_name} does not contain key {secret_key}")
+    return base64.b64decode(encoded).decode("utf-8")
+
+
+def env_item_value(namespace: str, item: dict) -> str:
+    if "value" in item:
+        return str(item.get("value") or "")
+    secret_ref = (
+        item.get("valueFrom", {})
+        .get("secretKeyRef", {})
+    )
+    if secret_ref.get("name") and secret_ref.get("key"):
+        return secret_value(namespace, secret_ref["name"], secret_ref["key"])
+    return ""
+
+
+def pod_env_map(namespace: str, pod: dict) -> dict:
+    values = {}
+    for container in pod.get("spec", {}).get("containers", []):
+        for item in container.get("env", []) or []:
+            name = item.get("name")
+            if name and name not in values:
+                values[name] = env_item_value(namespace, item)
+    return values
+
+
+def discover_minio_config(namespace: str) -> dict:
+    service = get_service(
+        namespace,
+        ("minio",),
+        name_contains=("minio",),
+        safe_name="kubectl get MinIO services",
+    )
+    if not service:
+        raise RuntimeError(f"Unable to find MinIO service in namespace {namespace}")
+    service_name = service.get("metadata", {}).get("name", "")
+    port = service_port(service, preferred_names=("api", "minio", "http"), preferred_ports=(9000,))
+    pods = service_pods(namespace, service)
+    if not pods:
+        raise RuntimeError(f"Unable to find a ready MinIO pod for service {namespace}/{service_name}")
+    env_values = pod_env_map(namespace, pods[0])
+    access_key = env_values.get("MINIO_ROOT_USER") or env_values.get("MINIO_ACCESS_KEY")
+    secret_key = env_values.get("MINIO_ROOT_PASSWORD") or env_values.get("MINIO_SECRET_KEY")
+    if not access_key or not secret_key:
+        raise RuntimeError(f"Unable to resolve MinIO credentials from pod env for service {namespace}/{service_name}")
+    buckets = env_values.get("MINIO_DEFAULT_BUCKETS") or "sandbox-workspace"
+    bucket = next((part.strip() for part in buckets.split(",") if part.strip()), "sandbox-workspace")
+    endpoint = f"http://{service_name}.{namespace}.svc.cluster.local:{port}"
+    return {
+        "endpoint": endpoint,
+        "bucket": bucket,
+        "access_key": access_key,
+        "secret_key": secret_key,
+        "pod": pods[0].get("metadata", {}).get("name", ""),
+    }
+
+
+def ensure_minio_bucket(namespace: str, minio: dict) -> None:
+    pod = minio.get("pod")
+    if not pod:
+        raise RuntimeError("Unable to ensure MinIO bucket because no MinIO pod was resolved")
+    script = f"""
+set -eu
+ACCESS_KEY=$(cat <<'ANYBACKUP_MINIO_ACCESS_KEY'
+{minio["access_key"]}
+ANYBACKUP_MINIO_ACCESS_KEY
+)
+SECRET_KEY=$(cat <<'ANYBACKUP_MINIO_SECRET_KEY'
+{minio["secret_key"]}
+ANYBACKUP_MINIO_SECRET_KEY
+)
+BUCKET=$(cat <<'ANYBACKUP_MINIO_BUCKET'
+{minio["bucket"]}
+ANYBACKUP_MINIO_BUCKET
+)
+ENDPOINT=$(cat <<'ANYBACKUP_MINIO_ENDPOINT'
+{minio["endpoint"]}
+ANYBACKUP_MINIO_ENDPOINT
+)
+export MC_CONFIG_DIR="/tmp/anybackup-mc-$$"
+command -v mc >/dev/null 2>&1
+mc alias set anybackup "$ENDPOINT" "$ACCESS_KEY" "$SECRET_KEY" >/dev/null
+if mc ls "anybackup/$BUCKET" >/dev/null 2>&1; then
+    exit 0
+fi
+mc mb -p "anybackup/$BUCKET" >/dev/null
+"""
+    run_cmd(
+        ["kubectl", "exec", "-i", "-n", namespace, pod, "--", "sh", "-s"],
+        input_text=script,
+        safe_name="ensure MinIO bucket for KWeaver OSSGateway default storage",
+    )
+
+
+def default_oss_gateway_storages(oss_base_url: str) -> list:
+    _, body = get_json(f"{oss_base_url}/api/v1/storages?enabled=true&is_default=true")
+    payload = json.loads(body or "{}")
+    return [item for item in list_items(payload) if isinstance(item, dict)]
+
+
+def ensure_oss_gateway_default_storage() -> bool:
+    if not ensure_oss_storage:
+        return False
+
+    oss_base_url = discover_oss_gateway_base_url(kweaver_namespace)
+    existing = default_oss_gateway_storages(oss_base_url)
+    minio = discover_minio_config(kweaver_namespace)
+    ensure_minio_bucket(kweaver_namespace, minio)
+    if existing:
+        log("OSSGateway default storage already exists and MinIO bucket is ready")
+        return False
+
+    payload = {
+        "storage_name": "kweaver-minio-default",
+        "vendor_type": "ECEPH",
+        "endpoint": minio["endpoint"],
+        "internal_endpoint": minio["endpoint"],
+        "bucket_name": minio["bucket"],
+        "access_key_id": minio["access_key"],
+        "access_key_secret": minio["secret_key"],
+        "is_default": True,
+    }
+    post_json(f"{oss_base_url}/api/v1/storages", payload, expected_statuses=(200, 201, 204))
+    after = default_oss_gateway_storages(oss_base_url)
+    if not after:
+        raise RuntimeError("OSSGateway default storage creation returned success but no default storage is visible")
+    log(f"Ensured OSSGateway default storage backed by MinIO bucket {minio['bucket']}")
+    return True
 
 
 def parse_json_payload(text: str):
@@ -501,10 +1051,14 @@ def publish_skill(skill_id: str, status: str) -> str:
 state = {
     "base_url": base_url,
     "business_domain": biz_domain,
+    "auth_policy_checked": False,
+    "oss_storage_checked": False,
     "publish_schema_checked": False,
     "skills": {},
 }
 
+state["auth_policy_checked"] = ensure_execution_factory_auth_policy()
+state["oss_storage_checked"] = ensure_oss_gateway_default_storage()
 state["publish_schema_checked"] = ensure_skill_publish_schema()
 
 for raw_dir in skill_dirs:

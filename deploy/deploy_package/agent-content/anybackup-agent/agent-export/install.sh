@@ -232,6 +232,8 @@ def rewrite_llm_refs(obj):
         source_id = str(llm_cfg.get("id") or "")
         source_name = str(llm_cfg.get("name") or "")
         mapped = llm_by_id.get(source_id) or llm_by_name.get(source_name)
+        if not mapped and len(llm_by_id) == 1:
+            mapped = next(iter(llm_by_id.values()))
         if mapped:
             llm_cfg["id"] = mapped.get("target_id") or source_id
             llm_cfg["name"] = mapped.get("target_name") or source_name

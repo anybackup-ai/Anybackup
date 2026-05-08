@@ -1,0 +1,63 @@
+{
+  "_notes": [
+    "Copy this file to models.json before running integrated deployment.",
+    "For alpha validation, api_key may be filled directly. For safer runs, leave api_key empty and export the api_key_env variable.",
+    "Small model kind=api uses KWeaver standard small-model API. Small model kind=adapter uses adapter_code_file for providers with non-standard rerank APIs."
+  ],
+  "_required_by_kweaver_tools": {
+    "llm_add": [
+      "model_name",
+      "model_series",
+      "api_model",
+      "api_url",
+      "api_key or api_key_env"
+    ],
+    "small_model_add_api": [
+      "model_name",
+      "model_type",
+      "api_url",
+      "api_model"
+    ]
+  },
+  "version": 1,
+  "llm": {
+    "role": "primary",
+    "model_name": "CHANGE_ME_LLM_NAME",
+    "model_series": "others",
+    "api_url": "https://example.com/v1/chat/completions",
+    "api_model": "CHANGE_ME_PROVIDER_MODEL_NAME",
+    "api_key": "",
+    "api_key_env": "ANYBACKUP_LLM_API_KEY"
+  },
+  "small_models": {
+    "embedding": {
+      "kind": "api",
+      "model_name": "embedding",
+      "model_type": "embedding",
+      "api_url": "https://example.com/v1/embeddings",
+      "api_model": "CHANGE_ME_EMBEDDING_MODEL_NAME",
+      "_optional_defaults": {
+        "batch_size": 2048,
+        "max_tokens": 512,
+        "embedding_dim": 768
+      },
+      "batch_size": 10,
+      "max_tokens": 8192,
+      "embedding_dim": 1024,
+      "api_key": "",
+      "api_key_env": "ANYBACKUP_EMBEDDING_API_KEY"
+    },
+    "reranker": {
+      "kind": "adapter",
+      "model_name": "qwen3-vl-rerank",
+      "model_type": "reranker",
+      "adapter_code_file": "small-model/small-model-adapter.txt.template",
+      "_optional_defaults": {
+        "batch_size": 100
+      },
+      "batch_size": 100,
+      "api_key": "",
+      "api_key_env": "ANYBACKUP_RERANKER_API_KEY"
+    }
+  }
+}

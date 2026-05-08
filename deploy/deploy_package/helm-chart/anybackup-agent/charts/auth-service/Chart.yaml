@@ -1,6 +1,0 @@
-apiVersion: v2
-name: auth-service
-description: Local Helm chart for deploying Keycloak as a backend auth service using external PostgreSQL storage.
-type: application
-version: 0.1.6
-appVersion: "26.5.1"

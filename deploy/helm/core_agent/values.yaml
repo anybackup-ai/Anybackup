@@ -40,33 +40,17 @@ resources:
     memory: 512Mi
 
 config:
-  rabbitmqExchange: "conversation.message.events"
-  rabbitmqExchangeType: topic
-  rabbitmqQueue: "core_agent.message.events"
-  # 单 Pod 内 RabbitMQ consumer worker 数；每个 worker 独占 MQ 连接、数据库会话和 KWeaver client。
-  rabbitmqConsumerCount: 2
-  # 状态回写必须发布到会话服务绑定的 topic exchange。
-  rabbitmqStatusExchange: "core_agent.run_status.events"
-  # 为空表示不覆盖状态 routing key，由服务按 accepted/completed/failed 三类事件键发布。
-  rabbitmqStatusRoutingKey: ""
+  rabbitmqExchange: ""
+  rabbitmqExchangeType: direct
+  rabbitmqQueue: ""
   kweaverBaseUrl: ""
-  kweaverDecisionAgentId: "01KQ187V2TFPYMZACY8VZTMQ4Y"
+  kweaverDecisionAgentId: ""
   kweaverBusinessDomain: ""
   kweaverTimeout: 30
-  # 为空表示不限制 Decision Agent 单次 chat/completion 等待时间；如需限制可填写秒数。
-  kweaverChatTimeout: ""
-  # DEBUG 日志只按间隔记录流式进度，不输出完整 chunk。
-  kweaverStreamProgressInterval: 100
-  # 调试阶段默认写完整流式 trace；生产环境建议覆盖为 false。
-  kweaverStreamTraceEnabled: true
-  # trace 开启时，该路径同时作为容器内挂载目录和节点 hostPath 目录。
-  kweaverStreamTraceDir: "/tmp/core-agent-service-trace-log"
   kweaverTlsInsecure: true
-  # 部署环境中 KWeaver OAuth 注册接口偶发 500 时，启动探针会导致 worker CrashLoop；默认关闭，真实消息处理时再暴露调用失败。
-  kweaverProbeOnStartup: false
-  # Anybackup Foundation CLI 连接地址，会随业务 Agent 请求写入 custom_querys.foundation.endpoint。
+  kweaverProbeOnStartup: true
   foundationEndpoint: ""
-  coreAgentLogLevel: DEBUG
+  coreAgentLogLevel: INFO
   coreAgentLogToStdout: true
   # 为空时表示禁用文件日志，仅按 coreAgentLogToStdout 输出。
   coreAgentLogFile: ""

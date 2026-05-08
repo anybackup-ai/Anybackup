@@ -1,4 +1,9 @@
 ---
+- name: Remove stale copied v9-infra chart directory
+  ansible.builtin.file:
+    path: "{{ remote_chart_root }}/v9-infra"
+    state: absent
+
 - name: Copy v9-infra chart to remote host
   ansible.builtin.copy:
     src: "{{ deployment_chart_source_root }}/v9-infra/"

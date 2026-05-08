@@ -1,4 +1,4 @@
 ---
 - name: Deploy AnyBackup Agent content only
-  ansible.builtin.include_role:
+  ansible.builtin.import_role:
     name: internal/agent_content

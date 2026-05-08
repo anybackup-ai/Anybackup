@@ -46,6 +46,116 @@
     fi
   changed_when: false
 
+- name: Verify configured KWeaver image overrides are rolled out
+  ansible.builtin.command: "kubectl rollout status deployment/{{ item.deployment }} -n {{ item.namespace }} --timeout={{ verify.timeout }}"
+  changed_when: false
+  loop: "{{ kweaver_image_overrides['items'] | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default(item.deployment) }}"
+  when:
+    - deployment_profile == "full"
+    - kweaver_image_overrides.enabled | default(false) | bool
+    - item.enabled | default(true) | bool
+
+- name: Verify configured KWeaver image overrides match the target image
+  ansible.builtin.shell: |
+    set -euo pipefail
+    current="$(kubectl get deployment {{ item.deployment | quote }} -n {{ item.namespace | quote }} -o jsonpath='{range .spec.template.spec.containers[?(@.name=="{{ item.container }}")]}{.image}{end}')"
+    test "$current" = {{ item.image | quote }}
+  args:
+    executable: /bin/bash
+  changed_when: false
+  loop: "{{ kweaver_image_overrides['items'] | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default(item.deployment) }}"
+  when:
+    - deployment_profile == "full"
+    - kweaver_image_overrides.enabled | default(false) | bool
+    - item.enabled | default(true) | bool
+
+- name: Verify sandbox overlay image contains foundation-cli when applied
+  ansible.builtin.shell: |
+    set -euo pipefail
+    summary="{{ artifacts_root }}/sandbox-overlay-summary.txt"
+    if [ ! -f "$summary" ]; then
+      echo "sandbox overlay summary not found; skipping sandbox image verification"
+      exit 0
+    fi
+    mode="$(awk -F= '$1=="mode"{print $2}' "$summary")"
+    image="$(awk -F= '$1=="image"{print $2}' "$summary")"
+    if [ "$mode" = "dry-run" ]; then
+      echo "sandbox overlay was dry-run; skipping sandbox image verification"
+      exit 0
+    fi
+    test -n "$image"
+    docker run --rm --entrypoint /bin/sh "$image" -c 'command -v foundation-cli >/dev/null'
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when:
+    - deployment_profile == "full"
+    - sandbox_overlay_enabled | default(true) | bool
+
+- name: Verify business services remain ClusterIP only
+  ansible.builtin.shell: |
+    set -euo pipefail
+    svc_type="$(kubectl get svc {{ item.resource_name | quote }} -n {{ item.namespace | quote }} -o jsonpath='{.spec.type}')"
+    test "$svc_type" = "ClusterIP"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  loop: "{{ service_contracts }}"
+  loop_control:
+    label: "{{ item.contract_name }}"
+  when: deployment_profile == "full"
+
+- name: Verify public ingress targets agent-web only
+  ansible.builtin.shell: |
+    set -euo pipefail
+    backends="$(kubectl get ingress v9-web -n {{ deployment_namespace | quote }} -o jsonpath='{range .spec.rules[*].http.paths[*]}{.backend.service.name}{"\n"}{end}' | sort -u | xargs)"
+    test "$backends" = {{ verify_public_web_contract.resource_name | quote }}
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when:
+    - deployment_profile == "full"
+    - verify_public_web_contract.resource_name | default('') | length > 0
+
+- name: Verify KWeaver CLI remains authenticated for Agent content checks
+  ansible.builtin.command:
+    argv:
+      - kweaver
+      - bkn
+      - list
+      - -bd
+      - "{{ agent_content.business_domain }}"
+  changed_when: false
+  when:
+    - deployment_profile == "full"
+    - agent_content.enabled | default(true) | bool
+
+- name: Verify Agent content deployment artifacts exist
+  ansible.builtin.shell: |
+    set -euo pipefail
+    {% if agent_content.deploy_models | bool %}
+    test -s {{ agent_content.model_config.state_file | quote }}
+    {% endif %}
+    {% if agent_content.deploy_backup_bkns | bool or agent_content.deploy_recovery_bkns | bool %}
+    test -s {{ (artifacts_root ~ '/anybackup-agent-content-state.json') | quote }}
+    {% endif %}
+    {% if agent_content.deploy_foundation_cli_skills | bool %}
+    test -s {{ agent_content.foundation_cli_skills.state_file | quote }}
+    {% endif %}
+    {% if agent_content.deploy_agent_export | bool %}
+    test -s {{ (agent_content.agent_export.work_dir ~ '/agent-export-state.json') | quote }}
+    {% endif %}
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when:
+    - deployment_profile == "full"
+    - agent_content.enabled | default(true) | bool
+
 - name: Run cluster smoke script
   ansible.builtin.command: "{{ remote_smoke_root }}/cluster-smoke.sh"
   environment:

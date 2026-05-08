@@ -129,38 +129,6 @@
       - "Install command: {{ kweaver_online_install_argv | join(' ') }}"
       - "KWeaver Core success is determined only by this command exit code."
 
-- name: Remove failed KWeaver resource Helm releases before replay
-  ansible.builtin.shell: |
-    set -euo pipefail
-    for namespace in resource kweaver ingress-nginx; do
-      helm list -n "${namespace}" -a --short 2>/dev/null \
-        | while read -r release; do
-            [ -n "${release}" ] || continue
-            status="$(helm status "${release}" -n "${namespace}" 2>/dev/null | awk '/^STATUS:/ {print $2; exit}')"
-            case "${status}" in
-              failed|pending-install|pending-upgrade|pending-rollback)
-                helm uninstall "${release}" -n "${namespace}" || true
-                ;;
-            esac
-          done
-    done
-  args:
-    executable: /bin/bash
-  when: kweaver_online.cleanup_failed_releases | default(true) | bool
-
-- name: Remove failed KWeaver pending PVC residue before replay
-  ansible.builtin.shell: |
-    set -euo pipefail
-    kubectl get pvc -n resource --no-headers 2>/dev/null \
-      | awk '$2=="Pending"{print $1}' \
-      | while read -r pvc; do
-          [ -n "${pvc}" ] || continue
-          kubectl delete pvc -n resource "${pvc}" --ignore-not-found
-        done
-  args:
-    executable: /bin/bash
-  when: kweaver_online.cleanup_failed_releases | default(true) | bool
-
 - name: Install KWeaver Core through official atomic command
   ansible.builtin.command:
     argv: "{{ kweaver_online_install_argv }}"

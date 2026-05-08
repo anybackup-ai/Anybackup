@@ -41,26 +41,9 @@ ensure_ansible_playbook() {
     return 0
   fi
 
-  if [[ "$(id -u)" = "0" ]]; then
-    if command -v dnf >/dev/null 2>&1; then
-      dnf install -y ansible-core ansible >/dev/null 2>&1 || dnf install -y ansible >/dev/null 2>&1 || true
-    elif command -v yum >/dev/null 2>&1; then
-      yum install -y ansible-core ansible >/dev/null 2>&1 || yum install -y ansible >/dev/null 2>&1 || true
-    fi
-  fi
-
-  if ! command -v ansible-playbook >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-    python3 -m pip install --user ansible >/dev/null 2>&1 || true
-    export PATH="${HOME}/.local/bin:${PATH}"
-  fi
-
-  if command -v ansible-playbook >/dev/null 2>&1; then
-    return 0
-  fi
-
   cat >&2 <<'EOF'
 ERROR: ansible-playbook was not found in PATH.
-Install Ansible on the deployment controller first. In --local mode the installer tries dnf/yum/pip once before failing.
+Install Ansible on the deployment controller first, or run this package on a Linux host where ansible-playbook is already available.
 EOF
   return 1
 }

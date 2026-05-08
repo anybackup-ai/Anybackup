@@ -20,11 +20,13 @@
     - role: network-preflight
       tags: ["network-preflight"]
     - role: load-images
-      tags: ["load-images", "never"]
+      tags: ["load-images", "deploy-services"]
     - role: deploy-services
       tags: ["deploy-services"]
     - role: deploy-agent-content
       tags: ["deploy-agent-content", "never"]
+    - role: app-services
+      tags: ["app-services", "never"]
     - role: publish-network
       tags: ["publish-network"]
     - role: verify-release

@@ -88,3 +88,54 @@ before packaging. Details:
 - `v9-infra-*` StatefulSet 是业务侧中间件的正式实例；如果现场残留旧的 `v9-postgres`、`v9-rabbitmq`、`v9-redis` Deployment，应删除残留并让同名 Service selector 指向 `v9-infra-*`。
 - 完整业务部署必须看到 `anybackup-ai` 中 5 个业务服务全部 Running。
 - 详细步骤见 [deployment-guide.md](docs/操作文档/deployment-guide.md)。
+
+## Required deployment gates
+
+The acceptance checklist for the current end-to-end flow lives in
+`docs/required-deployment-flow-checklist.md`. A deployment is not successful
+until every enabled gate in that checklist is verified: K8s/base middleware,
+KWeaver Core, sandbox `foundation-cli`, temporary `mf-model-api`, Foundation,
+knowledge data, data connections, BKN, ContextLoader, AnyBackup CLI skills,
+models, Agents, and the five business services with `agent-web` as the only
+external ingress target.
+
+The full integrated path creates KWeaver DataViews by default, including the
+Foundation `HyperBackupMgmServiceDB.protect_object` view used by recovery BKN.
+For KWeaver Core-only environments that do not include Etrino/PostgreSQL
+datasource support, explicitly pass
+`./install.sh --agent-content-vega-skip-kweaver-data-views true`.
+
+## Foundation endpoint and client defaults
+
+For the alpha integrated path, FoundationServer and FoundationClient default to
+the same host. `foundation.self_ip` is the IP passed to the official Foundation
+installer; `foundation.endpoint` is the endpoint consumed by Core Agent Service
+and `foundation-cli`, defaulting to
+`https://<foundation.access_host|foundation.self_ip>:9600`.
+
+Use `--foundation-access-host` or `--foundation-endpoint` when separated or
+external Foundation access differs from the install IP. After Foundation is
+installed, obtain AK/SK from the Foundation web console and provide them through
+hidden prompts or `FOUNDATION_CLI_AK` / `FOUNDATION_CLI_SK` before the five
+business services are released.
+
+## Uninstall
+
+`uninstall.sh` sits next to `install.sh` and removes package-owned runtime
+artifacts while keeping Kubernetes itself. Always preview first:
+
+```bash
+bash ./uninstall.sh --dry-run
+bash ./uninstall.sh --yes
+```
+
+Foundation is first removed through its official installer root:
+`/opt/backupsoft/FoundationServer/uninstall.sh` by default. After the official
+uninstall returns, the script also removes the `FoundationServer` root directory
+so stale install markers cannot make the next run skip a real install.
+FoundationClient follows the same rule: run its uninstall script when present,
+stop/disable/remove `ABClientService.service`, then remove the
+`FoundationClient` root. Override paths with
+`--foundation-install-root <path>` and `--foundation-client-install-root <path>`
+when they differ. Downloaded package tarballs are kept unless
+`--purge-packages` is specified.

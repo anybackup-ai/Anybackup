@@ -1,7 +1,7 @@
 replicaCount: 2
 
 image:
-  repository: registry.example.com/anybackup/web-service
+  repository: registry.example.com/anybackup/agent-web
   pullPolicy: IfNotPresent
   tag: latest
 
@@ -17,12 +17,22 @@ service:
   port: 80
   nodePort: null
 
-ingressRoute:
-  enabled: true
-  ingressClass: traefik
-  pathPrefix: /
-  priority: 1
-  middlewares: []
+authService:
+  upstream: http://192.168.40.107:80
+
+conversationService:
+  upstream: http://192.168.40.107:80
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: agent-web.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
 
 resources:
   requests:

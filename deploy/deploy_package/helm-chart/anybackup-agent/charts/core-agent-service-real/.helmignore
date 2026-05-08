@@ -1,8 +1,0 @@
-.git/
-.gitignore
-.DS_Store
-*.tar
-*.tgz
-*.tmp
-*.bak
-*.swp

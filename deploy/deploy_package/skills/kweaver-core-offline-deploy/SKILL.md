@@ -48,6 +48,22 @@ Deployment modes:
 - `separated`: Foundation runs on a different host. Run the installer on that host and feed its access addresses into KWeaver data connections and business service configuration.
 - `external`: Foundation already exists. Do not install; only verify and consume its endpoints, database, OpenSearch, and credentials.
 
+Endpoint handling:
+
+- `foundation.self_ip` is the IP passed to the Foundation official installer.
+- `foundation.access_host` is the address KWeaver and business services should use to reach Foundation. In integrated mode it defaults to `foundation.self_ip`; in separated/external mode the operator should set it explicitly.
+- `foundation.endpoint` is the Foundation CLI/API endpoint consumed by Core Agent Service. It defaults to `https://<foundation.access_host|foundation.self_ip>:9600`, and can be overridden with `--foundation-endpoint`, `foundation_endpoint`, or `FOUNDATION_CLI_ENDPOINT`.
+- Core Agent Service must receive `FOUNDATION_ENDPOINT`, `FOUNDATION_AK`, and `FOUNDATION_SK` through Helm values/Kubernetes Secret before the five business services are released.
+- AK/SK cannot be known before Foundation is installed. In the alpha flow, install/verify Foundation first, then pause or prompt for AK/SK obtained from the Foundation web console, then continue idempotently.
+
+FoundationClient:
+
+- FoundationClient is the backup client/runner runtime, not the `foundation-cli` binary injected into the KWeaver sandbox image.
+- In the alpha release, install FoundationClient on the same host as FoundationServer by default.
+- Install FoundationClient after Foundation succeeds and before sandbox overlay/business service release.
+- The FoundationServer package should provide `FoundationClient-Linux_el7_x64-latest.tar.gz` under `FoundationServer/data/softdownload/Linux_el7_x64/`.
+- Install the MySQL runner package with `client_cli install MySQL --path=<mysql-package-absolute-path>`. The current package source is `https://ftp.anybackup.ai/MySQL-Linux_el7_x64-8.0.9.0-20251231-release-zh_CN-ABNormal-378.tar.gz`.
+
 Idempotence:
 
 - Not installed: run the official installer.
@@ -72,9 +88,12 @@ Agent content deployment runs after KWeaver Core, sandbox image injection, the `
 - Create Foundation MariaDB and knowledge PostgreSQL Vega catalogs before BKN push.
 - BKN data view IDs must resolve to the target environment's Vega data views; prefer logical names over environment-specific UUIDs.
 - Import ContextLoader toolboxes from KWeaver-version-matched `.adp` packages before creating Agents.
-- Import AnyBackup CLI skills before creating Agents that reference Foundation CLI capabilities. Current required skills are `foundation-cli-client`, `foundation-cli-job`, `foundation-cli-mysql`, `foundation-cli-policy`, `foundation-cli-protect`, `foundation-cli-storage`, and `foundation-cli-timepoint`.
+- Import AnyBackup CLI skills before creating Agents that reference Foundation CLI capabilities. Current required skills are `foundation-cli-client`, `foundation-cli-job`, `foundation-cli-mysql`, `foundation-cli-policy`, `foundation-cli-protect`, `foundation-cli-storage`, `foundation-cli-timepoint`, and `ag-ui-response`.
 - Register those skills with `kweaver skill register --zip-file <skill.zip> --source custom`; the zip root must contain `SKILL.md` directly.
 - Publish every imported/reused AnyBackup CLI skill with `kweaver skill set-status <skill-id> published`. On KWeaver 0.6.0, if the runtime image requires `t_skill_release` and `t_skill_release_history` but the upstream migration did not create them, the integrated installer must first create the missing compatibility tables through KWeaver MariaDB, then use the KWeaver CLI publish command. Do not mark a skill deployment complete while it is still `unpublish`.
+- For skills with Python dependencies, importing and publishing the skill is not enough. After skill import, install dependencies from each skill's `requirements.txt` into a running KWeaver sandbox session through `POST /api/v1/sessions/<session_id>/dependencies/install` on `sandbox-control-plane`. The current `ag-ui-response` skill requires `aio-pika>=9.5.0`; use an explicit PyPI mirror URL, defaulting to `https://pypi.tuna.tsinghua.edu.cn/simple`, and fail clearly if no running sandbox session can be resolved.
+- On KWeaver 0.6.0 alpha, the default `admin` login can be valid while still lacking Execution Factory `skill/*` create/publish permission. Before `kweaver skill register`, the integrated installer may call the private `authorization` service in the KWeaver namespace, first ensure the `skill` resource type exists through `PUT /api/authorization/v1/resource_type/skill`, and then create an idempotent wildcard `skill` policy for the current logged-in user. Read the current user from the saved `kweaver auth whoami/status` session without adding `--base-url`, because auth subcommands with a transient base URL require `KWEAVER_TOKEN`. This is an alpha compatibility bootstrap, not a replacement for the normal permission model.
+- On KWeaver 0.6.0 alpha, `kweaver skill register` uploads the zip through Execution Factory and requires an OSS Gateway default storage. If `oss-gateway-backend` returns `OSSGatewayDefaultStorageNotFound`, the integrated installer should idempotently create a default storage backed by the in-cluster MinIO service before registering skills. Also ensure the target MinIO bucket exists; otherwise upload can fail with `OSSGatewayFailed` / `The specified bucket does not exist`. Do not log MinIO credentials.
 - Configure both LLM and small-model entries before Agent import. Do not skip `adapter=true` rerank models. On KWeaver 0.6.0, the public adapter small-model API has conflicting validation; the current compatibility path is API placeholder creation followed by a targeted `t_small_model` update through KWeaver MariaDB, without printing credentials or adapter code.
 - Replace Agent `tool_id`, `tool_box_id`, skill IDs, LLM IDs, and model names with target-environment values before create/publish.
 

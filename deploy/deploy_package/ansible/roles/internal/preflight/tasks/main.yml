@@ -28,16 +28,18 @@
       - v9_infra.namespace is defined
     fail_msg: "Missing required deployment variables. Check group_vars/all.yml and group_vars/secrets.yml."
 
-- name: Validate business image build schema
+- name: Validate business service schema
   ansible.builtin.assert:
     that:
       - item.name is defined
-      - item.source_dir is defined
+      - item.repo is defined
+      - item.ref is defined
       - item.dockerfile is defined
-      - item.image_repository is defined
       - item.image_tag is defined
-    fail_msg: "Each business_image_builds item must define name/source_dir/dockerfile/image_repository/image_tag."
-  loop: "{{ business_image_builds | default([]) }}"
+      - item.containerPort is defined
+      - item.servicePort is defined
+    fail_msg: "Each v9_services item must define name/repo/ref/dockerfile/image_tag/containerPort/servicePort."
+  loop: "{{ v9_services }}"
   loop_control:
     label: "{{ item.name }}"
   when: deployment_profile == "full"
@@ -45,10 +47,13 @@
 - name: Validate core agent build schema
   ansible.builtin.assert:
     that:
+      - core_agent_service.repo is defined
+      - core_agent_service.ref is defined
+      - core_agent_service.dockerfile is defined
       - core_agent_service.image_tag is defined
       - core_agent_service.kweaver.tokenSecretRef.name is defined
       - core_agent_service.kweaver.tokenSecretRef.key is defined
-    fail_msg: "core_agent_service is missing required image tag or secret reference fields."
+    fail_msg: "core_agent_service is missing required build or secret reference fields."
   when: deployment_profile == "full"
 
 - name: Validate Foundation install schema
@@ -65,61 +70,6 @@
   when:
     - deployment_profile == "full"
     - foundation.enabled | default(true) | bool
-
-- name: Check KWeaver CLI command before optional install
-  ansible.builtin.command: which kweaver
-  register: preflight_kweaver_cli_check
-  changed_when: false
-  failed_when: false
-  when: deployment_profile in ["full", "agent-content-only"]
-
-- name: Resolve npm command for KWeaver CLI tools
-  ansible.builtin.shell: |
-    set -euo pipefail
-    if command -v npm >/dev/null 2>&1; then
-      command -v npm
-      exit 0
-    fi
-    find /root/.nvm/versions/node -path '*/bin/npm' -type f 2>/dev/null | sort -V | tail -1
-  args:
-    executable: /bin/bash
-  register: preflight_npm_command
-  changed_when: false
-  failed_when: false
-  when:
-    - deployment_profile in ["full", "agent-content-only"]
-    - preflight_kweaver_cli_check.rc != 0
-
-- name: Install KWeaver CLI tools when missing
-  ansible.builtin.command:
-    argv:
-      - "{{ preflight_npm_command.stdout }}"
-      - install
-      - -g
-      - "@kweaver-ai/kweaver-sdk"
-      - "@kweaver-ai/kweaver-admin"
-  when:
-    - deployment_profile in ["full", "agent-content-only"]
-    - preflight_kweaver_cli_check.rc != 0
-    - preflight_npm_command.stdout | default('') | length > 0
-
-- name: Expose nvm-installed Node and KWeaver CLIs on system PATH
-  ansible.builtin.shell: |
-    set -euo pipefail
-    npm_cmd={{ preflight_npm_command.stdout | default('') | quote }}
-    [ -n "${npm_cmd}" ] || exit 0
-    node_bin="$(dirname "${npm_cmd}")"
-    for cmd in node npm npx kweaver kweaver-admin; do
-      if [ -x "${node_bin}/${cmd}" ]; then
-        ln -sf "${node_bin}/${cmd}" "/usr/local/bin/${cmd}"
-      fi
-    done
-  args:
-    executable: /bin/bash
-  when:
-    - deployment_profile in ["full", "agent-content-only"]
-    - preflight_kweaver_cli_check.rc != 0
-    - preflight_npm_command.stdout | default('') | length > 0
 
 - name: Build required remote command list for the selected profile
   ansible.builtin.set_fact:

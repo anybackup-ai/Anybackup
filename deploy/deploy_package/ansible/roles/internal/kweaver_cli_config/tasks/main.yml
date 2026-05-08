@@ -4,8 +4,8 @@
     kweaver_cli_effective_host: >-
       {{
         (kweaver_cli.host | default('', true))
-        or (ansible_host | default(''))
-        or ((ansible_default_ipv4.address) if (ansible_default_ipv4 is defined and ansible_default_ipv4.address is defined) else '')
+        or (((ansible_host | default('')) not in ['', 'localhost', '127.0.0.1', '::1']) | ternary((ansible_host | default('')), ''))
+        or (ansible_default_ipv4.address | default(''))
       }}
 
 - name: Resolve KWeaver CLI target base URL
@@ -54,25 +54,10 @@
         (kweaver_cli_target_status_before_login.rc | default(1)) == 0
         and ('No saved token' not in (kweaver_cli_target_status_before_login.stderr | default('')))
         and ('Authentication: none' not in (kweaver_cli_target_status_before_login.stdout | default('')))
+        and ('Token status: expired' not in (kweaver_cli_target_status_before_login.stdout | default('')))
+        and ('refresh failed' not in (kweaver_cli_target_status_before_login.stdout | default('')))
+        and ('refresh failed' not in (kweaver_cli_target_status_before_login.stderr | default('')))
       }}
-
-- name: Wait for KWeaver OAuth endpoint before CLI login
-  ansible.builtin.shell: |
-    set -euo pipefail
-    code="$(curl -k -sS -o /dev/null -w '%{http_code}' --max-time 10 "{{ kweaver_cli_effective_base_url }}/oauth2/signin" || true)"
-    case "${code}" in
-      2*|3*|4*) exit 0 ;;
-      *) printf '%s\n' "${code}"; exit 1 ;;
-    esac
-  args:
-    executable: /bin/bash
-  register: kweaver_cli_oauth_wait
-  changed_when: false
-  retries: "{{ kweaver_cli.login_retries | default(60) }}"
-  delay: "{{ kweaver_cli.login_retry_delay | default(10) }}"
-  until: kweaver_cli_oauth_wait.rc == 0
-  when:
-    - not (kweaver_cli_saved_login_usable | bool)
 
 - name: Login to local KWeaver platform with current password when needed
   ansible.builtin.shell: |
@@ -92,8 +77,8 @@
   no_log: true
   changed_when: kweaver_cli_current_password_login.rc == 0
   failed_when: false
-  retries: "{{ kweaver_cli.current_password_login_retries | default(3) }}"
-  delay: "{{ kweaver_cli.login_retry_delay | default(10) }}"
+  retries: "{{ kweaver_cli.login_retries | default(3) | int }}"
+  delay: "{{ kweaver_cli.login_delay_seconds | default(10) | int }}"
   until: kweaver_cli_current_password_login.rc == 0
   when:
     - not (kweaver_cli_saved_login_usable | bool)
@@ -123,8 +108,8 @@
   no_log: true
   changed_when: kweaver_cli_initial_password_login.rc == 0
   failed_when: false
-  retries: "{{ kweaver_cli.initial_password_login_retries | default(kweaver_cli.login_retries | default(60)) }}"
-  delay: "{{ kweaver_cli.login_retry_delay | default(10) }}"
+  retries: "{{ kweaver_cli.login_retries | default(3) | int }}"
+  delay: "{{ kweaver_cli.login_delay_seconds | default(10) | int }}"
   until: kweaver_cli_initial_password_login.rc == 0
   when:
     - not (kweaver_cli_saved_login_usable | bool)
@@ -150,6 +135,9 @@
       - kweaver_cli_target_status.rc == 0
       - "'No saved token' not in (kweaver_cli_target_status.stderr | default(''))"
       - "'Authentication: none' not in (kweaver_cli_target_status.stdout | default(''))"
+      - "'Token status: expired' not in (kweaver_cli_target_status.stdout | default(''))"
+      - "'refresh failed' not in (kweaver_cli_target_status.stdout | default(''))"
+      - "'refresh failed' not in (kweaver_cli_target_status.stderr | default(''))"
     fail_msg: >-
       KWeaver CLI is pointed at {{ kweaver_cli_effective_base_url }}, but no
       usable authenticated login exists for this platform. Provide
@@ -169,7 +157,7 @@
       - kweaver
       - auth
       - use
-      - "{{ kweaver_cli_effective_base_url }}"
+      - "{{ (kweaver_cli.alias | default('', true)) or kweaver_cli_effective_base_url }}"
       - --global
   register: kweaver_cli_use
   changed_when: "'Current platform' in (kweaver_cli_use.stdout | default('')) or kweaver_cli_use.rc == 0"
@@ -194,7 +182,7 @@
       Expected {{ kweaver_cli_effective_base_url }}. Current status:
       {{ kweaver_cli_current_status.stdout | default('') }}
 
-- name: Verify local KWeaver BKN API through CLI
+- name: Wait for local KWeaver BKN API through CLI
   ansible.builtin.command:
     argv:
       - kweaver
@@ -205,8 +193,8 @@
   register: kweaver_cli_bkn_probe
   changed_when: false
   failed_when: false
-  retries: "{{ kweaver_cli.api_retries | default(60) }}"
-  delay: "{{ kweaver_cli.api_retry_delay | default(10) }}"
+  retries: "{{ kweaver_cli.bkn_api_retries | default(40) | int }}"
+  delay: "{{ kweaver_cli.bkn_api_delay_seconds | default(15) | int }}"
   until: kweaver_cli_bkn_probe.rc == 0
   when: kweaver_cli.verify_bkn_api | default(true) | bool
 

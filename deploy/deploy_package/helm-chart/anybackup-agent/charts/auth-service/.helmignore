@@ -1,5 +1,0 @@
-*.tgz
-charts/
-.package-tmp/
-.DS_Store
-Thumbs.db

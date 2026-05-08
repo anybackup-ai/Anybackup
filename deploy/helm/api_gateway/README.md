@@ -36,9 +36,3 @@ helm upgrade --install api-gateway-service src\helm\api_gateway_service_chart `
   --wait `
   --timeout 5m
 ```
-
-## License and Third-Party Notices
-
-- This chart's source is distributed under the repository root [LICENSE](../../../LICENSE) (SSPL-1.0) together with the root [NOTICE](../../../NOTICE).
-- Third-party open-source components shipped with this chart (the Traefik Helm chart and container image, source dependencies of the local Traefik plugin, etc.) are declared uniformly in [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md).
-- When upgrading Traefik, adding any third-party image, or changing component licenses, the Inventory table of the above notice file MUST be updated in the same commit.

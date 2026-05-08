@@ -23,13 +23,10 @@ config:
   serviceName: conversation_service
   serviceVersion: 0.1.0
   apiPrefix: /api/conversation_service/v1
-  rabbitmqExchange: conversation.message.events
-  coreAgentStatusExchange: core_agent.run_status.events
-  coreAgentStatusQueue: conversation.core_agent.run_status
+  rabbitmqExchange: conversation.agent.events
+  coreAgentStatusQueue: conversation.core_agent.status.v1
   coreAgentStatusPrefetchCount: 10
-  decisionAgentAgUiExchange: decision_agent.ag_ui.events
   decisionAgentAgUiQueue: conversation.decision_agent.ag_ui
-  decisionAgentAgUiRoutingKey: decision_agent.session.ag_ui_event.v1
   decisionAgentAgUiPrefetchCount: 10
   backgroundWorkersEnabled: true
   outboxPollIntervalMs: 1000

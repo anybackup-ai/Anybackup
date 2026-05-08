@@ -1,0 +1,45 @@
+import uuid
+from typing import Any, Dict, List
+
+import aiohttp
+
+
+DASHSCOPE_API_KEY = "__ANYBACKUP_RERANKER_API_KEY__"
+DASHSCOPE_RERANK_URL = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+DASHSCOPE_RERANK_MODEL = "qwen3-vl-rerank"
+DEFAULT_TOP_N = 2
+DEFAULT_INSTRUCT = "Given a web search query, retrieve relevant passages that answer the query."
+
+
+async def main(query: str, documents: List[str]) -> Dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": DASHSCOPE_RERANK_MODEL,
+        "input": {
+            "query": query,
+            "documents": documents,
+        },
+        "parameters": {
+            "return_documents": True,
+            "top_n": DEFAULT_TOP_N,
+            "instruct": DEFAULT_INSTRUCT,
+        },
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(DASHSCOPE_RERANK_URL, json=payload, headers=headers) as resp:
+            if resp.status != 200:
+                detail = await resp.text()
+                raise Exception(f"DashScope rerank API failed with status {resp.status}: {detail}")
+            dashscope_response = await resp.json()
+
+    return {
+        "id": str(uuid.uuid4()),
+        "model": payload["model"],
+        "object": "rerank_result",
+        "results": dashscope_response.get("output", {}).get("results", []),
+        "usage": dashscope_response.get("usage", {}),
+    }

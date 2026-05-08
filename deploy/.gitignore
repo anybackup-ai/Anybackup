@@ -1,0 +1,6 @@
+/tmp/
+/deploy_package/kweaver-llm-config/models.json
+/deploy_package/kweaver-llm-config/model-roles.json
+/deploy_package/kweaver-llm-config/llm/
+/deploy_package/kweaver-llm-config/small-model/small-model-adapter.txt
+/deploy_package/kweaver-llm-config/small-model/small-model-list.json

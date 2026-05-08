@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.local/decision-agent-markdown-input.schema.json",
+  "title": "Decision Agent Markdown Input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "markdown",
+    "conversation_id",
+    "turn_id",
+    "sequence"
+  ],
+  "properties": {
+    "markdown": {
+      "type": "string",
+      "minLength": 1
+    },
+    "conversation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "turn_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "message_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_service": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

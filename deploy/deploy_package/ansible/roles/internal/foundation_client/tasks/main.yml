@@ -1,0 +1,234 @@
+---
+- name: Resolve FoundationClient architecture
+  ansible.builtin.set_fact:
+    foundation_client_machine_arch: "{{ ansible_architecture | default(ansible_machine | default('')) }}"
+    foundation_client_effective_arch_dir: >-
+      {{
+        foundation_client.arch_dir | default(
+          'Linux_el7_x64'
+          if (ansible_architecture | default(ansible_machine | default(''))) in ['x86_64', 'amd64']
+          else 'Linux_el7_aarch64'
+          if (ansible_architecture | default(ansible_machine | default(''))) in ['aarch64', 'arm64']
+          else '',
+          true
+        )
+      }}
+
+- name: Assert FoundationClient architecture is supported
+  ansible.builtin.assert:
+    that:
+      - foundation_client_effective_arch_dir | length > 0
+    fail_msg: >-
+      Unsupported FoundationClient machine architecture {{ foundation_client_machine_arch }}.
+      Configure foundation_client.arch_dir, for example Linux_el7_x64, to match
+      FoundationServer/data/softdownload/<arch>.
+
+- name: Resolve FoundationClient install facts
+  ansible.builtin.set_fact:
+    foundation_client_effective_work_dir: "{{ foundation_client.work_dir | default(foundation_effective_work_dir | default('/backupsoft')) }}"
+    foundation_client_effective_install_root: "{{ foundation_client.install_root | default((foundation_client.work_dir | default(foundation_effective_work_dir | default('/backupsoft'))) ~ '/FoundationClient') }}"
+    foundation_client_effective_basic_archive_path: "{{ foundation_client.basic_archive_path | default((foundation_effective_install_root | default('/backupsoft/FoundationServer')) ~ '/data/softdownload/' ~ foundation_client_effective_arch_dir ~ '/Basic-' ~ foundation_client_effective_arch_dir ~ '-latest.tar.gz', true) }}"
+    foundation_client_effective_mysql_package_filename: "{{ (foundation_client.mysql_package_filename | default('', true)) or 'MySQL-Linux_el7_x64-8.0.9.0-20251231-release-zh_CN-ABNormal-378.tar.gz' }}"
+    foundation_client_effective_self_ip: "{{ foundation_client.self_ip | default(foundation_effective_self_ip | default('')) }}"
+    foundation_client_effective_server_ip: "{{ foundation_client.target_host | default(foundation_client.server_ip | default(foundation_effective_access_host | default(foundation_effective_self_ip | default(''))), true) }}"
+    foundation_client_effective_server_port: "{{ foundation_client.server_port | default(9614) }}"
+    foundation_client_effective_runner_name: "{{ foundation_client.runner_name | default('MySQL') }}"
+    foundation_client_mysql_marker: "{{ artifacts_root }}/foundation-client-mysql-runner-installed"
+
+- name: Resolve FoundationClient MySQL runner package facts
+  ansible.builtin.set_fact:
+    foundation_client_effective_mysql_package_url: "{{ (foundation_client.mysql_package_url | default('', true)) or 'https://ftp.anybackup.ai/MySQL-Linux_el7_x64-8.0.9.0-20251231-release-zh_CN-ABNormal-378.tar.gz' }}"
+    foundation_client_effective_mysql_package_path: "{{ (foundation_client.mysql_package_path | default('', true)) or (foundation_client_effective_work_dir ~ '/' ~ foundation_client_effective_mysql_package_filename) }}"
+
+- name: Assert FoundationClient same-host inputs are usable
+  ansible.builtin.assert:
+    that:
+      - foundation_client_effective_self_ip | length > 0
+      - foundation_client_effective_server_ip | length > 0
+    fail_msg: >-
+      FoundationClient defaults to the Foundation host in this alpha release.
+      Configure foundation_client_self_ip/foundation_client_server_ip, or set
+      foundation_self_ip/foundation_access_host for integrated or separated mode.
+
+- name: Ensure FoundationClient work directory exists
+  ansible.builtin.file:
+    path: "{{ foundation_client_effective_work_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Check FoundationClient install marker
+  ansible.builtin.stat:
+    path: "{{ foundation_client_effective_install_root }}/etc/ClientService/BasicRunner/install_param.config"
+  register: foundation_client_install_marker_stat
+
+- name: Check BasicRunner archive from FoundationServer softdownload
+  ansible.builtin.stat:
+    path: "{{ foundation_client_effective_basic_archive_path }}"
+  register: foundation_client_basic_archive_stat
+  when:
+    - not (foundation_client_install_marker_stat.stat.exists | default(false))
+      or foundation_client.force_reinstall | default(false) | bool
+
+- name: Assert BasicRunner archive exists
+  ansible.builtin.assert:
+    that:
+      - foundation_client_basic_archive_stat.stat.exists | default(false)
+    fail_msg: >-
+      FoundationClient BasicRunner archive {{ foundation_client_effective_basic_archive_path }} is missing.
+      Expected FoundationServer to provide
+      Basic-{{ foundation_client_effective_arch_dir }}-latest.tar.gz under
+      data/softdownload/{{ foundation_client_effective_arch_dir }}.
+  when:
+    - not (foundation_client_install_marker_stat.stat.exists | default(false))
+      or foundation_client.force_reinstall | default(false) | bool
+
+- name: Extract FoundationClient BasicRunner archive
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -zxf
+      - "{{ foundation_client_effective_basic_archive_path }}"
+      - -C
+      - "{{ foundation_client_effective_work_dir }}"
+    creates: "{{ foundation_client_effective_install_root }}/ClientService/install.sh"
+  when:
+    - not (foundation_client_install_marker_stat.stat.exists | default(false))
+      or foundation_client.force_reinstall | default(false) | bool
+
+- name: Check extracted FoundationClient installer
+  ansible.builtin.stat:
+    path: "{{ foundation_client_effective_install_root }}/ClientService/install.sh"
+  register: foundation_client_installer_stat
+
+- name: Assert FoundationClient installer exists
+  ansible.builtin.assert:
+    that:
+      - foundation_client_installer_stat.stat.exists | default(false)
+    fail_msg: "FoundationClient installer {{ foundation_client_effective_install_root }}/ClientService/install.sh was not found."
+
+- name: Install FoundationClient BasicRunner on the Foundation host
+  ansible.builtin.command:
+    argv:
+      - bash
+      - ./install.sh
+      - --silent=y
+      - "--selfip={{ foundation_client_effective_self_ip }}"
+      - "--serverip={{ foundation_client_effective_server_ip }}"
+      - "--serverport={{ foundation_client_effective_server_port }}"
+    chdir: "{{ foundation_client_effective_install_root }}/ClientService"
+  register: foundation_client_install_result
+  changed_when: true
+  when:
+    - not (foundation_client_install_marker_stat.stat.exists | default(false))
+      or foundation_client.force_reinstall | default(false) | bool
+
+- name: Check FoundationClient runner config
+  ansible.builtin.stat:
+    path: "{{ foundation_client_effective_install_root }}/etc/ClientService/BasicRunner/all_runner_info.config"
+  register: foundation_client_runner_config_stat
+
+- name: Assert FoundationClient runner config exists
+  ansible.builtin.assert:
+    that:
+      - foundation_client_runner_config_stat.stat.exists | default(false)
+    fail_msg: >-
+      FoundationClient runner config
+      {{ foundation_client_effective_install_root }}/etc/ClientService/BasicRunner/all_runner_info.config
+      was not found after BasicRunner install.
+
+- name: Ensure MySQL is listed in FoundationClient runner config
+  ansible.builtin.shell: |
+    set -euo pipefail
+    config={{ (foundation_client_effective_install_root ~ '/etc/ClientService/BasicRunner/all_runner_info.config') | quote }}
+    runner={{ foundation_client_effective_runner_name | quote }}
+    python3 - "$config" "$runner" <<'PY'
+    import sys
+    from pathlib import Path
+
+    path = Path(sys.argv[1])
+    runner = sys.argv[2]
+    lines = path.read_text(encoding="utf-8").splitlines()
+    output = []
+    changed = False
+    found = False
+    for line in lines:
+        if line.startswith("runner_list="):
+            found = True
+            raw = line.split("=", 1)[1]
+            runners = [item for item in raw.split(";") if item]
+            if runner not in runners:
+                runners.append(runner)
+                changed = True
+            output.append("runner_list=" + ";".join(runners) + ";")
+        else:
+            output.append(line)
+    if not found:
+        output.append(f"runner_list={runner};")
+        changed = True
+    if changed:
+        path.write_text("\n".join(output) + "\n", encoding="utf-8")
+        # Expected alpha line after first install: runner_list=MySQL;
+        print("runner_list=MySQL;")
+    PY
+  args:
+    executable: /bin/bash
+  register: foundation_client_runner_config_update
+  changed_when: "'runner_list=' in foundation_client_runner_config_update.stdout"
+
+- name: Check FoundationClient MySQL runner package
+  ansible.builtin.stat:
+    path: "{{ foundation_client_effective_mysql_package_path }}"
+  register: foundation_client_mysql_package_stat
+
+- name: Download FoundationClient MySQL runner package when missing
+  ansible.builtin.get_url:
+    url: "{{ foundation_client_effective_mysql_package_url }}"
+    dest: "{{ foundation_client_effective_mysql_package_path }}"
+    mode: "0644"
+  when:
+    - not (foundation_client_mysql_package_stat.stat.exists | default(false))
+
+- name: Check FoundationClient MySQL runner install marker
+  ansible.builtin.stat:
+    path: "{{ foundation_client_mysql_marker }}"
+  register: foundation_client_mysql_marker_stat
+
+- name: Install MySQL runner with FoundationClient client_cli
+  # Equivalent command from E:\tmp\foundationclient_install.md:
+  # sh ./client_cli install MySQL --path=<mysql-package-absolute-path>
+  # The top-level client_cli is a shell wrapper without a shebang.
+  ansible.builtin.command:
+    argv:
+      - sh
+      - ./client_cli
+      - install
+      - "{{ foundation_client_effective_runner_name }}"
+      - "--path={{ foundation_client_effective_mysql_package_path }}"
+    chdir: "{{ foundation_client_effective_install_root }}/ClientService"
+  register: foundation_client_mysql_install_result
+  changed_when: foundation_client_mysql_install_result.rc == 0
+  failed_when: >-
+    foundation_client_mysql_install_result.rc != 0 and
+    ('already' not in (foundation_client_mysql_install_result.stdout | default('') | lower)) and
+    ('already' not in (foundation_client_mysql_install_result.stderr | default('') | lower)) and
+    ('exist' not in (foundation_client_mysql_install_result.stdout | default('') | lower)) and
+    ('exist' not in (foundation_client_mysql_install_result.stderr | default('') | lower))
+  when:
+    - not (foundation_client_mysql_marker_stat.stat.exists | default(false))
+      or foundation_client.force_reinstall | default(false) | bool
+
+- name: Mark FoundationClient MySQL runner installed
+  ansible.builtin.file:
+    path: "{{ foundation_client_mysql_marker }}"
+    state: touch
+    mode: "0600"
+  when:
+    - foundation_client_mysql_install_result is defined
+    - foundation_client_mysql_install_result.rc | default(0) == 0
+
+- name: Print FoundationClient summary
+  ansible.builtin.debug:
+    msg:
+      - "FoundationClient root: {{ foundation_client_effective_install_root }}"
+      - "FoundationClient target host: {{ foundation_client_effective_server_ip }}:{{ foundation_client_effective_server_port }}"
+      - "FoundationClient runner: {{ foundation_client_effective_runner_name }}"

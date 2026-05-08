@@ -1,14 +1,12 @@
-1. Get the application access URL:
-{{- if .Values.ingressRoute.enabled }}
-  The frontend is exposed through the API Gateway Traefik IngressRoute:
-  {{ .Values.ingressRoute.pathPrefix }}
-{{- else }}
-  kubectl port-forward svc/{{ include "web-service.fullname" . }} 8080:{{ .Values.service.port }}
-  Then open http://127.0.0.1:8080
-{{- end }}
+1. 获取应用访问地址：
+  {{- if .Values.ingress.enabled }}
+  {{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/
+  {{- end }}
+  {{- else }}
+  kubectl port-forward svc/{{ include "agent-web.fullname" . }} 8080:{{ .Values.service.port }}
+  然后访问 http://127.0.0.1:8080
+  {{- end }}
 
-2. Business API routes are not configured by this chart.
-  They are exposed by their own service charts through API Gateway.
-
-3. The container health endpoint is:
-  http://127.0.0.1/healthz
+2. 当前前端默认使用相对接口前缀 `/api/auth_service/v1`。
+   如果认证服务也走同域名，需要在集群里额外配置 `/api/auth_service` 的后端路由。

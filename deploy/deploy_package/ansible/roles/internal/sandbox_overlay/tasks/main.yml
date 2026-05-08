@@ -154,7 +154,9 @@
     mode: "0644"
     content: |
       FROM {{ sandbox_image_resolved }}
-      COPY --chmod=0755 foundation-cli /usr/local/bin/foundation-cli
+      USER root
+      COPY foundation-cli /usr/local/bin/foundation-cli
+      RUN chmod 0755 /usr/local/bin/foundation-cli
 
 - name: Print sandbox overlay summary
   ansible.builtin.debug:

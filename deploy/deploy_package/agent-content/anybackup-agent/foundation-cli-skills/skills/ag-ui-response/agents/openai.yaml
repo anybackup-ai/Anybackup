@@ -1,0 +1,4 @@
+interface:
+  display_name: "AG-UI Markdown 回复"
+  short_description: "生成用户可见 Markdown，并包装到 MQ payload.ag_ui 字符串字段"
+  default_prompt: "Use $ag-ui-response before visible business actions to generate user-visible Markdown, validate it, and publish it as the payload.ag_ui Markdown string in Decision Agent MQ messages."

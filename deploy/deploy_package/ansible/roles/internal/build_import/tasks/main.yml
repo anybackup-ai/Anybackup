@@ -5,6 +5,15 @@
     state: directory
     mode: "0755"
 
+- name: Assert business image build list is configured
+  ansible.builtin.assert:
+    that:
+      - business_image_builds | default([]) | length > 0
+    fail_msg: >-
+      business_image_builds is empty. Run from a complete Anybackup repository checkout
+      so defaults can resolve to {{ anybackup_repo_root | default(package_root ~ '/../..') }},
+      or set business_image_builds explicitly.
+
 - name: Check business image source directories
   ansible.builtin.stat:
     path: "{{ item.source_dir }}"
@@ -21,21 +30,32 @@
     fail_msg: >-
       Missing business image source directory {{ item.item.source_dir }}.
       Upload the whole E:\Code\Service\Anybackup repository and run
-      deploy/deploy_temp/install.sh from inside that repository, or set
+      deploy/install.sh from inside that repository, or set
       anybackup_repo_root_override to the repository root on the target host.
   loop: "{{ business_image_source_check.results }}"
   loop_control:
     label: "{{ item.item.name }}"
 
+- name: Resolve agent-web image build source
+  ansible.builtin.set_fact:
+    agent_web_build: "{{ business_image_builds | default([]) | selectattr('name', 'equalto', 'agent-web') | list | first }}"
+
+- name: Assert agent-web image build source is resolved
+  ansible.builtin.assert:
+    that:
+      - agent_web_build.source_dir is defined
+      - agent_web_build.source_dir | length > 0
+    fail_msg: "business_image_builds must include agent-web with source_dir before building agent-web."
+
 - name: Ensure agent-web nginx template directory exists
   ansible.builtin.file:
-    path: "{{ anybackup_repo_root }}/Agent/portal/ops/nginx"
+    path: "{{ agent_web_build.source_dir }}/ops/nginx"
     state: directory
     mode: "0755"
 
 - name: Ensure agent-web nginx template exists for Docker build context
   ansible.builtin.copy:
-    dest: "{{ anybackup_repo_root }}/Agent/portal/ops/nginx/default.conf.template"
+    dest: "{{ agent_web_build.source_dir }}/ops/nginx/default.conf.template"
     force: false
     mode: "0644"
     content: |
@@ -94,7 +114,24 @@
 - name: Import business service images into cluster runtime
   ansible.builtin.shell: |
     set -euo pipefail
-    {{ image_import_command }} "{{ artifacts_root }}/images/{{ item.name }}-{{ item.image_tag }}.tar"
+    image_tar="{{ artifacts_root }}/images/{{ item.name }}-{{ item.image_tag }}.tar"
+    import_command="{{ image_import_command | default('', true) }}"
+
+    if [[ -n "$import_command" ]]; then
+      read -r -a import_args <<< "$import_command"
+      "${import_args[@]}" "$image_tar"
+    elif command -v k3s >/dev/null 2>&1; then
+      k3s ctr images import "$image_tar"
+    elif command -v ctr >/dev/null 2>&1; then
+      ctr -n k8s.io images import "$image_tar"
+    elif command -v nerdctl >/dev/null 2>&1; then
+      nerdctl --namespace k8s.io load -i "$image_tar"
+    elif command -v docker >/dev/null 2>&1; then
+      docker load --input "$image_tar"
+    else
+      echo "No supported cluster image import tool found. Tried k3s, ctr, nerdctl, docker." >&2
+      exit 1
+    fi
   args:
     executable: /bin/bash
   loop: "{{ business_image_builds | default([]) }}"

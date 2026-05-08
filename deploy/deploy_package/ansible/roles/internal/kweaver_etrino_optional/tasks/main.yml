@@ -1,0 +1,64 @@
+---
+- name: Check official KWeaver Etrino optional installer
+  ansible.builtin.stat:
+    path: "{{ kweaver_etrino.script_path }}"
+  register: kweaver_etrino_installer
+
+- name: Assert official KWeaver Etrino optional installer exists
+  ansible.builtin.assert:
+    that:
+      - kweaver_etrino_installer.stat.exists | bool
+    fail_msg: >-
+      KWeaver Etrino optional installer was not found at
+      {{ kweaver_etrino.script_path }}. KWeaver DataView creation for
+      PostgreSQL/MariaDB requires the Etrino optional package.
+
+- name: Ensure official KWeaver Etrino optional installer is executable
+  ansible.builtin.file:
+    path: "{{ kweaver_etrino.script_path }}"
+    mode: "0755"
+  when: kweaver_etrino.install | bool
+
+- name: Install KWeaver Etrino optional services through official script
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ kweaver_etrino.script_path }}"
+  args:
+    chdir: "{{ kweaver_online.deploy_dir }}"
+  environment:
+    NAMESPACE: "{{ kweaver_etrino.namespace }}"
+    CONFIG_FILE: "{{ kweaver_etrino.config_file }}"
+    CONFIG_YAML_PATH: "{{ kweaver_etrino.config_file }}"
+  register: kweaver_etrino_install_result
+  changed_when: >-
+    'Installing vega-' in (kweaver_etrino_install_result.stdout | default(''))
+    or 'Starting Etrino installation' in (kweaver_etrino_install_result.stdout | default(''))
+  when: kweaver_etrino.install | bool
+
+- name: Wait for KWeaver Etrino optional workloads to be ready
+  ansible.builtin.shell: |
+    set -euo pipefail
+    namespace="{{ kweaver_etrino.namespace }}"
+    workload="{{ item }}"
+    resource=""
+
+    for kind in deployment statefulset; do
+      if kubectl get "$kind/$workload" -n "$namespace" >/dev/null 2>&1; then
+        resource="$kind/$workload"
+        break
+      fi
+    done
+
+    if [[ -z "$resource" ]]; then
+      echo "KWeaver Etrino optional workload $workload is missing in namespace $namespace." >&2
+      exit 1
+    fi
+
+    kubectl rollout status "$resource" -n "$namespace" --timeout="{{ kweaver_etrino.rollout_timeout }}"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  loop: "{{ kweaver_etrino.required_workloads }}"
+  loop_control:
+    label: "{{ item }}"

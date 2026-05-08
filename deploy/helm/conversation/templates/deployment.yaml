@@ -77,18 +77,12 @@ spec:
                   key: {{ .Values.secrets.redisUrlKey }}
             - name: RABBITMQ_EXCHANGE
               value: {{ .Values.config.rabbitmqExchange | quote }}
-            - name: CORE_AGENT_STATUS_EXCHANGE
-              value: {{ .Values.config.coreAgentStatusExchange | quote }}
             - name: CORE_AGENT_STATUS_QUEUE
               value: {{ .Values.config.coreAgentStatusQueue | quote }}
             - name: CORE_AGENT_STATUS_PREFETCH_COUNT
               value: {{ .Values.config.coreAgentStatusPrefetchCount | quote }}
             - name: DECISION_AGENT_AG_UI_QUEUE
               value: {{ .Values.config.decisionAgentAgUiQueue | quote }}
-            - name: DECISION_AGENT_AG_UI_EXCHANGE
-              value: {{ .Values.config.decisionAgentAgUiExchange | quote }}
-            - name: DECISION_AGENT_AG_UI_ROUTING_KEY
-              value: {{ .Values.config.decisionAgentAgUiRoutingKey | quote }}
             - name: DECISION_AGENT_AG_UI_PREFETCH_COUNT
               value: {{ .Values.config.decisionAgentAgUiPrefetchCount | quote }}
             - name: BACKGROUND_WORKERS_ENABLED

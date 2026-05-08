@@ -1,5 +1,27 @@
 ---
-- name: Copy service charts to remote host
+- name: Resolve KWeaver runtime networking for service release
+  ansible.builtin.include_role:
+    name: internal/network_runtime
+
+- name: Remove stale copied service chart directories
+  ansible.builtin.file:
+    path: "{{ remote_chart_root }}/{{ item.dest }}"
+    state: absent
+  loop:
+    - src: api_gateway
+      dest: api-gateway-service
+    - src: auth
+      dest: auth-service
+    - src: conversation
+      dest: conversation-service
+    - src: core_agent
+      dest: core-agent-service-real
+    - src: web
+      dest: agent-web
+  loop_control:
+    label: "{{ item.dest }}"
+
+- name: Copy service charts from canonical deploy/helm source
   ansible.builtin.copy:
     src: "{{ deployment_chart_source_root }}/{{ item.src }}/"
     dest: "{{ remote_chart_root }}/{{ item.dest }}/"
@@ -12,11 +34,11 @@
     - src: conversation
       dest: conversation-service
     - src: core_agent
-      dest: core-agent-service
+      dest: core-agent-service-real
     - src: web
       dest: agent-web
   loop_control:
-    label: "{{ item.src }} -> {{ item.dest }}"
+    label: "{{ item.dest }}"
 
 - name: Ensure application namespace exists
   ansible.builtin.command: "kubectl get namespace {{ deployment_namespace }}"
@@ -28,6 +50,36 @@
   ansible.builtin.command: "kubectl create namespace {{ deployment_namespace }}"
   when: deployment_ns.rc != 0
 
+- name: Recover pending service Helm releases before upgrade
+  ansible.builtin.shell: |
+    set -euo pipefail
+    release={{ item | quote }}
+    ns={{ deployment_namespace | quote }}
+    status="$(helm status "$release" -n "$ns" -o json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("info",{}).get("status", ""))' || true)"
+    case "$status" in
+      pending-install|pending-upgrade|pending-rollback)
+        revision="$(helm history "$release" -n "$ns" -o json | python3 -c 'import json,sys; hist=json.load(sys.stdin); deployed=[int(x.get("revision", 0)) for x in hist if x.get("status") == "deployed"]; print(max(deployed) if deployed else "")')"
+        if [ -z "$revision" ]; then
+          echo "Helm release $release is $status and has no deployed revision to roll back to." >&2
+          exit 2
+        fi
+        helm rollback "$release" "$revision" -n "$ns" --wait --timeout {{ helm_wait_timeout | quote }}
+        echo "__ROLLED_BACK__ $release $status $revision"
+        ;;
+    esac
+  args:
+    executable: /bin/bash
+  register: service_helm_pending_recovery
+  changed_when: "'__ROLLED_BACK__' in service_helm_pending_recovery.stdout"
+  loop:
+    - api-gateway-service
+    - auth-service
+    - "{{ core_agent_service.release_name }}"
+    - conversation-service
+    - agent-web
+  loop_control:
+    label: "{{ item }}"
+
 - name: Resolve preset agents for core agent release
   ansible.builtin.set_fact:
     core_agent_preset_agents: >-
@@ -36,6 +88,55 @@
         | combine({'backup': backup_agent_id}, recursive=True)
         | combine(({'recovery': recovery_agent_id} if (recovery_agent_id | default('') | length > 0) else {}), recursive=True)
       }}
+
+- name: Resolve Foundation endpoint for Core Agent Service
+  ansible.builtin.set_fact:
+    core_agent_foundation_endpoint_effective: "{{ core_agent_service.foundation.endpoint | default(foundation.endpoint | default(''), true) }}"
+    core_agent_foundation_ak_configured: "{{ core_agent_service.foundation.ak | default('', true) }}"
+    core_agent_foundation_sk_configured: "{{ core_agent_service.foundation.sk | default('', true) }}"
+
+- name: Prompt for Foundation CLI AK for Core Agent Service when needed
+  ansible.builtin.pause:
+    prompt: "Input Foundation CLI AK for Core Agent Service (output is hidden)"
+    echo: false
+  register: core_agent_foundation_ak_prompt
+  no_log: true
+  when:
+    - core_agent_foundation_endpoint_effective | length > 0
+    - core_agent_foundation_ak_configured | length == 0
+    - core_agent_service.foundation.prompt_for_credentials | default(true) | bool
+
+- name: Prompt for Foundation CLI SK for Core Agent Service when needed
+  ansible.builtin.pause:
+    prompt: "Input Foundation CLI SK for Core Agent Service (output is hidden)"
+    echo: false
+  register: core_agent_foundation_sk_prompt
+  no_log: true
+  when:
+    - core_agent_foundation_endpoint_effective | length > 0
+    - core_agent_foundation_sk_configured | length == 0
+    - core_agent_service.foundation.prompt_for_credentials | default(true) | bool
+
+- name: Resolve Foundation AK/SK for Core Agent Service
+  ansible.builtin.set_fact:
+    core_agent_foundation_ak_effective: "{{ core_agent_foundation_ak_configured or (core_agent_foundation_ak_prompt.user_input | default('')) }}"
+    core_agent_foundation_sk_effective: "{{ core_agent_foundation_sk_configured or (core_agent_foundation_sk_prompt.user_input | default('')) }}"
+  no_log: true
+
+- name: Assert Foundation endpoint and AK/SK are ready for Core Agent Service
+  ansible.builtin.assert:
+    that:
+      - core_agent_foundation_endpoint_effective | length > 0
+      - core_agent_foundation_ak_effective | length > 0
+      - core_agent_foundation_sk_effective | length > 0
+    fail_msg: >-
+      Core Agent Service requires Foundation endpoint/AK/SK before the 5 business
+      services are released. Run after Foundation is installed, then export
+      FOUNDATION_CLI_AK and FOUNDATION_CLI_SK or enter them at the hidden prompt.
+    success_msg: "Foundation endpoint and AK/SK for Core Agent Service are ready."
+  when:
+    - foundation.enabled | default(true) | bool
+    - foundation.mode | default('integrated') in ['integrated', 'separated', 'external']
 
 - name: Render service values files
   ansible.builtin.template:
@@ -108,7 +209,7 @@
       - upgrade
       - --install
       - "{{ core_agent_service.release_name }}"
-      - "{{ remote_chart_root }}/core-agent-service"
+      - "{{ remote_chart_root }}/core-agent-service-real"
       - --namespace
       - "{{ deployment_namespace }}"
       - --create-namespace
@@ -117,6 +218,19 @@
       - --wait
       - --timeout
       - "{{ helm_wait_timeout }}"
+
+- name: Pre-create conversation service Secret for migration hook
+  ansible.builtin.shell: |
+    set -euo pipefail
+    helm template conversation-service "{{ remote_chart_root }}/conversation-service" \
+      --namespace "{{ deployment_namespace }}" \
+      --values "{{ generated_root }}/conversation-service-values.yaml" \
+      --show-only templates/secret.yaml \
+      | kubectl apply -n "{{ deployment_namespace }}" -f -
+  args:
+    executable: /bin/bash
+  no_log: true
+  changed_when: true
 
 - name: Deploy conversation service
   ansible.builtin.command:

@@ -1,8 +1,8 @@
-{{- define "web-service.name" -}}
+{{- define "agent-web.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "web-service.fullname" -}}
+{{- define "agent-web.fullname" -}}
 {{- if .Values.fullnameOverride -}}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
@@ -15,19 +15,19 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "web-service.chart" -}}
+{{- define "agent-web.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "web-service.labels" -}}
-helm.sh/chart: {{ include "web-service.chart" . }}
-app.kubernetes.io/name: {{ include "web-service.name" . }}
+{{- define "agent-web.labels" -}}
+helm.sh/chart: {{ include "agent-web.chart" . }}
+app.kubernetes.io/name: {{ include "agent-web.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
-{{- define "web-service.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "web-service.name" . }}
+{{- define "agent-web.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "agent-web.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}

@@ -1,6 +1,6 @@
 apiVersion: v2
-name: web-service
-description: AnyBackup AI Web Service SPA Helm Chart
+name: agent-web
+description: Anybackup Agent Web SPA Helm Chart
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

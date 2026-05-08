@@ -9,11 +9,57 @@
   ansible.builtin.set_fact:
     foundation_effective_self_ip: "{{ foundation.self_ip | default('') }}"
     foundation_effective_access_host: "{{ foundation.access_host | default(foundation.self_ip | default('')) }}"
-    foundation_effective_install_root: "{{ foundation.install_root | default('/backupsoft/AnyBackupServer') }}"
+    foundation_configured_install_root: "{{ foundation.install_root | default('/backupsoft/FoundationServer') }}"
     foundation_effective_work_dir: "{{ foundation.work_dir | default('/backupsoft') }}"
-    foundation_effective_install_marker: "{{ foundation.install_marker | default((foundation.install_root | default('/backupsoft/AnyBackupServer')) ~ '/etc/installenv') }}"
-    foundation_effective_install_cfg: "{{ foundation.install_cfg | default((foundation.install_root | default('/backupsoft/AnyBackupServer')) ~ '/install.cfg') }}"
-    foundation_effective_package_path: "{{ foundation.package_path | default('/backupsoft/Linux_el7_x64-latest.tar.gz') }}"
+    foundation_effective_package_url: "{{ foundation.package_url | default('') }}"
+    foundation_effective_package_pattern: "{{ foundation.package_pattern | default('FoundationServer-Linux_el7_x64-9.0.0.0*.tar.gz') }}"
+    foundation_effective_package_path: "{{ foundation.package_path | default('', true) }}"
+
+- name: Auto-detect Foundation installer root
+  ansible.builtin.shell: |
+    set -euo pipefail
+    configured={{ foundation_configured_install_root | quote }}
+    work_dir={{ foundation_effective_work_dir | quote }}
+
+    for candidate in "$configured" "$work_dir/FoundationServer" "$work_dir/AnyBackupServer"; do
+      if [ -n "$candidate" ] && { [ -f "$candidate/install.sh" ] || [ -f "$candidate/etc/installenv" ]; }; then
+        printf '%s' "$candidate"
+        exit 0
+      fi
+    done
+
+    found="$(
+      find "$work_dir" -mindepth 2 -maxdepth 2 -type f -name install.sh -print 2>/dev/null \
+        | sed 's#/install.sh$##' \
+        | grep -E '/(FoundationServer|AnyBackupServer)$' \
+        | sort \
+        | head -1 || true
+    )"
+    if [ -n "$found" ]; then
+      printf '%s' "$found"
+      exit 0
+    fi
+
+    printf '%s' "$configured"
+  args:
+    executable: /bin/bash
+  register: foundation_install_root_detect
+  changed_when: false
+  when: foundation.mode != "external"
+
+- name: Resolve effective Foundation install paths
+  ansible.builtin.set_fact:
+    foundation_effective_install_root: >-
+      {{
+        (foundation_install_root_detect.stdout | default('') | trim)
+        if foundation.mode != 'external'
+        else foundation_configured_install_root
+      }}
+
+- name: Resolve effective Foundation marker paths
+  ansible.builtin.set_fact:
+    foundation_effective_install_marker: "{{ foundation_install_marker | default(foundation_effective_install_root ~ '/etc/installenv') }}"
+    foundation_effective_install_cfg: "{{ foundation_install_cfg | default(foundation_effective_install_root ~ '/install.cfg') }}"
 
 - name: Stop when external Foundation does not provide access host
   ansible.builtin.assert:
@@ -44,13 +90,61 @@
   register: foundation_install_marker_stat
   when: foundation.mode != "external"
 
+- name: Detect existing Foundation ClusterService
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if [ -f /etc/init.d/ClusterService ]; then
+      echo initd
+      exit 0
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+      if systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '{print $1}' | grep -Eq '^ClusterService(\.service)?$'; then
+        echo systemd
+        exit 0
+      fi
+      if systemctl list-units --type=service --all --no-legend 2>/dev/null | awk '{print $1}' | grep -Eq '^ClusterService(\.service)?$'; then
+        echo systemd-active
+        exit 0
+      fi
+    fi
+    if command -v service >/dev/null 2>&1 && service ClusterService status >/dev/null 2>&1; then
+      echo service
+      exit 0
+    fi
+    exit 1
+  args:
+    executable: /bin/bash
+  register: foundation_cluster_service_check
+  changed_when: false
+  failed_when: false
+  when: foundation.mode != "external"
+
+- name: Resolve Foundation existing installation state
+  ansible.builtin.set_fact:
+    foundation_existing_install_detected: >-
+      {{
+        (foundation_install_marker_stat.stat.exists | default(false))
+        or ((foundation_cluster_service_check.rc | default(1)) == 0)
+      }}
+    foundation_existing_install_reason: >-
+      {{
+        'install marker'
+        if (foundation_install_marker_stat.stat.exists | default(false))
+        else (
+          'ClusterService ' ~ (foundation_cluster_service_check.stdout | default('') | trim)
+          if ((foundation_cluster_service_check.rc | default(1)) == 0)
+          else ''
+        )
+      }}
+  when: foundation.mode != "external"
+
 - name: Check Foundation install command record
   ansible.builtin.stat:
     path: "{{ foundation_effective_install_cfg }}"
   register: foundation_install_cfg_stat
   when:
     - foundation.mode != "external"
-    - foundation_install_marker_stat.stat.exists | default(false)
+    - foundation_existing_install_detected | default(false)
 
 - name: Read Foundation install command record
   ansible.builtin.slurp:
@@ -58,7 +152,7 @@
   register: foundation_install_cfg_content
   when:
     - foundation.mode != "external"
-    - foundation_install_marker_stat.stat.exists | default(false)
+    - foundation_existing_install_detected | default(false)
     - foundation_install_cfg_stat.stat.exists | default(false)
 
 - name: Resolve existing Foundation install command
@@ -71,7 +165,7 @@
       }}
   when:
     - foundation.mode != "external"
-    - foundation_install_marker_stat.stat.exists | default(false)
+    - foundation_existing_install_detected | default(false)
 
 - name: Validate existing Foundation self IP
   ansible.builtin.assert:
@@ -85,7 +179,8 @@
   when:
     - foundation.mode != "external"
     - foundation.strict_existing_config | default(true) | bool
-    - foundation_install_marker_stat.stat.exists | default(false)
+    - foundation_existing_install_detected | default(false)
+    - foundation_install_cfg_stat.stat.exists | default(false)
     - not (foundation.force_install | default(false) | bool)
 
 - name: Stop when Foundation force reinstall is requested
@@ -95,17 +190,18 @@
       Automatic force reinstall is intentionally unsupported; uninstall or repair Foundation manually first.
   when:
     - foundation.mode != "external"
-    - foundation_install_marker_stat.stat.exists | default(false)
+    - foundation_existing_install_detected | default(false)
     - foundation.force_install | default(false) | bool
 
 - name: Report existing Foundation installation
   ansible.builtin.debug:
     msg:
       - "Foundation already installed at {{ foundation_effective_install_root }}; skipping installer."
+      - "Detected by: {{ foundation_existing_install_reason | default('') }}"
       - "Recorded command: {{ foundation_existing_install_command | default('') }}"
   when:
     - foundation.mode != "external"
-    - foundation_install_marker_stat.stat.exists | default(false)
+    - foundation_existing_install_detected | default(false)
     - not (foundation.force_install | default(false) | bool)
 
 - name: Ensure Foundation work directory exists
@@ -115,7 +211,7 @@
     mode: "0755"
   when:
     - foundation.mode != "external"
-    - not (foundation_install_marker_stat.stat.exists | default(false))
+    - not (foundation_existing_install_detected | default(false))
 
 - name: Check extracted Foundation installer
   ansible.builtin.stat:
@@ -123,27 +219,99 @@
   register: foundation_install_script_stat
   when:
     - foundation.mode != "external"
-    - not (foundation_install_marker_stat.stat.exists | default(false))
+    - not (foundation_existing_install_detected | default(false))
 
+- name: Resolve Foundation package archive from explicit path or default pattern
+  ansible.builtin.shell: |
+    set -euo pipefail
+    explicit={{ foundation_effective_package_path | quote }}
+    work_dir={{ foundation_effective_work_dir | quote }}
+    pattern={{ foundation_effective_package_pattern | quote }}
+    url={{ foundation_effective_package_url | quote }}
+
+    if [ -n "$explicit" ]; then
+      printf '%s' "$explicit"
+      exit 0
+    fi
+
+    found="$(
+      find "$work_dir" -maxdepth 1 -type f -name "$pattern" -print 2>/dev/null \
+        | sort \
+        | tail -1 || true
+    )"
+    if [ -n "$found" ]; then
+      printf '%s' "$found"
+      exit 0
+    fi
+
+    if [ -n "$url" ]; then
+      printf '%s/%s' "$work_dir" "$(basename "$url")"
+      exit 0
+    fi
+
+    printf '%s/%s' "$work_dir" "$pattern"
+  args:
+    executable: /bin/bash
+  register: foundation_package_path_resolve
+  changed_when: false
+  when:
+    - foundation.mode != "external"
+    - not (foundation_existing_install_detected | default(false))
+    - not (foundation_install_script_stat.stat.exists | default(false))
+
+- name: Use resolved Foundation package archive path
+  ansible.builtin.set_fact:
+    foundation_effective_package_path: "{{ foundation_package_path_resolve.stdout | trim }}"
+  when:
+    - foundation.mode != "external"
+    - not (foundation_existing_install_detected | default(false))
+    - not (foundation_install_script_stat.stat.exists | default(false))
 - name: Check Foundation package archive
   ansible.builtin.stat:
     path: "{{ foundation_effective_package_path }}"
   register: foundation_package_stat
   when:
     - foundation.mode != "external"
-    - not (foundation_install_marker_stat.stat.exists | default(false))
+    - not (foundation_existing_install_detected | default(false))
     - not (foundation_install_script_stat.stat.exists | default(false))
+
+- name: Download Foundation package when missing
+  ansible.builtin.get_url:
+    url: "{{ foundation_effective_package_url }}"
+    dest: "{{ foundation_effective_package_path }}"
+    mode: "0644"
+    timeout: 1800
+  when:
+    - foundation.mode != "external"
+    - not (foundation_existing_install_detected | default(false))
+    - not (foundation_install_script_stat.stat.exists | default(false))
+    - not (foundation_package_stat.stat.exists | default(false))
+    - foundation_effective_package_url | length > 0
+
+- name: Recheck Foundation package archive after download
+  ansible.builtin.stat:
+    path: "{{ foundation_effective_package_path }}"
+  register: foundation_package_stat_after_download
+  when:
+    - foundation.mode != "external"
+    - not (foundation_existing_install_detected | default(false))
+    - not (foundation_install_script_stat.stat.exists | default(false))
+    - not (foundation_package_stat.stat.exists | default(false))
 
 - name: Assert Foundation package archive exists
   ansible.builtin.assert:
     that:
-      - foundation_package_stat.stat.exists | default(false)
+      - >-
+        (foundation_package_stat.stat.exists | default(false))
+        or (foundation_package_stat_after_download.stat.exists | default(false))
     fail_msg: >-
       Foundation package {{ foundation_effective_package_path }} is missing and
       {{ foundation_effective_install_root }}/install.sh is not present.
+      Expected a local package matching {{ foundation_effective_package_pattern }} under
+      {{ foundation_effective_work_dir }}, or download from {{ foundation_effective_package_url }}.
   when:
     - foundation.mode != "external"
-    - not (foundation_install_marker_stat.stat.exists | default(false))
+    - not (foundation_existing_install_detected | default(false))
     - not (foundation_install_script_stat.stat.exists | default(false))
 
 - name: Extract Foundation package
@@ -157,7 +325,7 @@
     creates: "{{ foundation_effective_install_root }}/install.sh"
   when:
     - foundation.mode != "external"
-    - not (foundation_install_marker_stat.stat.exists | default(false))
+    - not (foundation_existing_install_detected | default(false))
     - not (foundation_install_script_stat.stat.exists | default(false))
 
 - name: Recheck extracted Foundation installer
@@ -166,7 +334,7 @@
   register: foundation_install_script_after_extract
   when:
     - foundation.mode != "external"
-    - not (foundation_install_marker_stat.stat.exists | default(false))
+    - not (foundation_existing_install_detected | default(false))
 
 - name: Assert Foundation installer is ready
   ansible.builtin.assert:
@@ -175,7 +343,7 @@
     fail_msg: "Foundation installer {{ foundation_effective_install_root }}/install.sh was not found after extraction."
   when:
     - foundation.mode != "external"
-    - not (foundation_install_marker_stat.stat.exists | default(false))
+    - not (foundation_existing_install_detected | default(false))
 
 - name: Install Foundation with official command
   ansible.builtin.command:
@@ -189,10 +357,13 @@
       - "--clustertype={{ foundation.cluster_type }}"
     chdir: "{{ foundation_effective_install_root }}"
   register: foundation_install_result
-  changed_when: true
+  changed_when: foundation_install_result.rc == 0
+  failed_when: >-
+    foundation_install_result.rc != 0
+    and 'ClusterService already exists' not in (foundation_install_result.stdout | default(''))
   when:
     - foundation.mode != "external"
-    - not (foundation_install_marker_stat.stat.exists | default(false))
+    - not (foundation_existing_install_detected | default(false))
 
 - name: Recheck Foundation installed marker
   ansible.builtin.stat:
@@ -200,7 +371,7 @@
   register: foundation_install_marker_after_install
   when:
     - foundation.mode != "external"
-    - not (foundation_install_marker_stat.stat.exists | default(false))
+    - not (foundation_existing_install_detected | default(false))
 
 - name: Assert Foundation installation completed
   ansible.builtin.assert:
@@ -211,4 +382,16 @@
       Check {{ foundation_effective_install_root }}/logs/install.log and the Ansible task output.
   when:
     - foundation.mode != "external"
-    - not (foundation_install_marker_stat.stat.exists | default(false))
+    - not (foundation_existing_install_detected | default(false))
+    - foundation_install_result.rc == 0
+
+- name: Report Foundation installer found existing ClusterService
+  ansible.builtin.debug:
+    msg:
+      - "Foundation installer reported ClusterService already exists; treating Foundation as already installed."
+      - "Install root: {{ foundation_effective_install_root }}"
+  when:
+    - foundation.mode != "external"
+    - not (foundation_existing_install_detected | default(false))
+    - foundation_install_result.rc != 0
+    - "'ClusterService already exists' in (foundation_install_result.stdout | default(''))"
