@@ -26,7 +26,9 @@
     "api_url": "https://example.com/v1/chat/completions",
     "api_model": "CHANGE_ME_PROVIDER_MODEL_NAME",
     "api_key": "",
-    "api_key_env": "ANYBACKUP_LLM_API_KEY"
+    "api_key_env": "ANYBACKUP_LLM_API_KEY",
+    "model_type": "llm",
+    "max_model_len": 4096
   },
   "small_models": {
     "embedding": {
