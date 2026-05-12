@@ -28,6 +28,25 @@
       - v9_infra.namespace is defined
     fail_msg: "Missing required deployment variables. Check group_vars/all.yml and group_vars/secrets.yml."
 
+- name: Check packaged cluster smoke script exists
+  ansible.builtin.stat:
+    path: "{{ package_root }}/scripts/smoke/cluster-smoke.sh"
+  delegate_to: localhost
+  become: false
+  register: packaged_cluster_smoke_script
+  when: deployment_profile != "kweaver-core-only"
+
+- name: Assert packaged cluster smoke script exists
+  ansible.builtin.assert:
+    that:
+      - packaged_cluster_smoke_script.stat.exists
+      - packaged_cluster_smoke_script.stat.isreg
+    fail_msg: >-
+      Missing {{ package_root }}/scripts/smoke/cluster-smoke.sh.
+      The release package is incomplete; package from the canonical AnyBackup
+      repository and include deploy_package/scripts/smoke/cluster-smoke.sh.
+  when: deployment_profile != "kweaver-core-only"
+
 - name: Validate business service schema
   ansible.builtin.assert:
     that:
@@ -113,19 +132,6 @@
 - name: Set cluster image import command
   ansible.builtin.set_fact:
     image_import_command: "{{ image_import_command_detect.stdout }}"
-
-- name: Check remote local-path storage class exists
-  ansible.builtin.command: "kubectl get storageclass {{ v9_infra.default_storage_class }}"
-  register: preflight_storageclass_check
-  changed_when: false
-
-- name: Assert remote local-path storage class exists
-  ansible.builtin.assert:
-    that:
-      - preflight_storageclass_check.rc == 0
-    fail_msg: >-
-      Required StorageClass {{ v9_infra.default_storage_class }} is missing on the remote host.
-      Bootstrap the Kubernetes storage provisioner before running this release package.
 
 - name: Ensure remote working directories exist
   ansible.builtin.file:

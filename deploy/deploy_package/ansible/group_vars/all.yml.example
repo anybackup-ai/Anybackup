@@ -7,10 +7,28 @@ remote_sandbox_build_dir: "{{ remote_deploy_root }}/sandbox-build"
 artifacts_root: "{{ remote_deploy_root }}/artifacts"
 deployment_profile: full
 foundation_cli_min_bytes: 1048576
+private_image_registry_host_default: anybackup-v9-cn-beijing.cr.volces.com
+private_image_registry_namespace_default: anybackup-ai
+private_image_registry_host_effective: "{{ private_image_registry_host | default(private_image_registry_host_default, true) }}"
+private_image_registry_namespace_effective: "{{ private_image_registry_namespace | default(private_image_registry_namespace_default, true) }}"
+private_image_registry_prefix: "{{ private_image_registry_host_effective }}/{{ private_image_registry_namespace_effective }}"
 
 k8s_cluster:
   bootstrap_command: "{{ k8s_cluster_bootstrap_command | default('') }}"
   require_ready_nodes: "{{ k8s_cluster_require_ready_nodes | default(true) }}"
+  local_path:
+    enabled: "{{ k8s_cluster_local_path_enabled | default(true) }}"
+    storage_class: "{{ k8s_cluster_local_path_storage_class | default(v9_infra.default_storage_class | default('local-path')) }}"
+    namespace: "{{ k8s_cluster_local_path_namespace | default('local-path-storage') }}"
+    deployment: "{{ k8s_cluster_local_path_deployment | default('local-path-provisioner') }}"
+    manifest_url: "{{ k8s_cluster_local_path_manifest_url | default('https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.31/deploy/local-path-storage.yaml') }}"
+    primary_image: "{{ k8s_cluster_local_path_primary_image | default(private_image_registry_prefix ~ '/k8s/local-path-provisioner:v0.0.31') }}"
+    fallback_image: "{{ k8s_cluster_local_path_fallback_image | default(private_image_registry_prefix ~ '/k8s/local-path-provisioner:v0.0.31') }}"
+    fallback_registry_url: "{{ k8s_cluster_local_path_fallback_registry_url | default('https://' ~ private_image_registry_host_effective ~ '/v2/' ~ private_image_registry_namespace_effective ~ '/k8s/local-path-provisioner/manifests/v0.0.31') }}"
+    helper_configmap: "{{ k8s_cluster_local_path_helper_configmap | default('local-path-config') }}"
+    helper_image: "{{ k8s_cluster_local_path_helper_image | default(private_image_registry_prefix ~ '/thirdparty/busybox:1.36') }}"
+    rollout_timeout: "{{ k8s_cluster_local_path_rollout_timeout | default('180s') }}"
+    make_default: "{{ k8s_cluster_local_path_make_default | default(true) }}"
 
 foundation:
   enabled: "{{ foundation_enabled | default(true) }}"
@@ -23,7 +41,7 @@ foundation:
   self_ip: "{{ foundation_self_ip | default('') }}"
   access_host: "{{ foundation_access_host | default(foundation_self_ip | default('')) }}"
   endpoint_port: "{{ foundation_endpoint_port | default(9600) }}"
-  endpoint: "{{ (foundation_endpoint | default('', true)) or (lookup('ansible.builtin.env', 'FOUNDATION_CLI_ENDPOINT') | default('', true)) or ('https://' ~ ((foundation_access_host | default(foundation_self_ip | default(''))) | string) ~ ':' ~ ((foundation_endpoint_port | default(9600)) | string)) }}"
+  endpoint: "{{ (foundation_endpoint | default('', true)) or (lookup('ansible.builtin.env', 'FOUNDATION_CLI_ENDPOINT') | default('', true)) or ('https://' ~ (((foundation_self_ip | default('', true)) or (foundation_access_host | default('', true))) | string) ~ ':' ~ ((foundation_endpoint_port | default(9600)) | string)) }}"
   product: Enterprise
   server_type: NONE
   mgm_type: ControlNode
@@ -40,8 +58,8 @@ foundation_client:
   mysql_package_url: "{{ foundation_client_package_url | default('https://ftp.anybackup.ai/MySQL-Linux_el7_x64-8.0.9.0-20251231-release-zh_CN-ABNormal-378.tar.gz') }}"
   mysql_package_path: "{{ foundation_client_package_path | default((foundation.work_dir | default('/backupsoft')) ~ '/MySQL-Linux_el7_x64-8.0.9.0-20251231-release-zh_CN-ABNormal-378.tar.gz') }}"
   self_ip: "{{ foundation_client_self_ip | default(foundation.self_ip | default('')) }}"
-  server_ip: "{{ foundation_client_server_ip | default((foundation.access_host | default('', true)) or (foundation.self_ip | default('', true)), true) }}"
-  target_host: "{{ foundation_client_target_host | default(foundation_client_server_ip | default((foundation.access_host | default('', true)) or (foundation.self_ip | default('', true)), true), true) }}"
+  server_ip: "{{ foundation_client_server_ip | default((foundation.self_ip | default('', true)) or (foundation.access_host | default('', true)), true) }}"
+  target_host: "{{ foundation_client_target_host | default(foundation_client_server_ip | default((foundation.self_ip | default('', true)) or (foundation.access_host | default('', true)), true), true) }}"
   server_port: "{{ foundation_client_server_port | default(9614) }}"
   runner_name: "{{ foundation_client_runner_name | default('MySQL') }}"
   force_reinstall: "{{ foundation_client_force_reinstall | default(false) }}"
@@ -224,13 +242,25 @@ service_contracts:
     service_port: "{{ core_agent_service.service_port }}"
     external: false
 
+api_gateway_service:
+  traefik:
+    image_registry: "{{ private_image_registry_prefix }}"
+    image_repository: thirdparty/traefik
+    image_tag: v3.6.13
+
+auth_service:
+  keycloak:
+    image_registry: "{{ private_image_registry_prefix }}"
+    image_repository: thirdparty/keycloak
+    image_tag: 26.5.1
+
 v9_infra:
   release_name: v9-infra
   namespace: v9-system
   image_pull_policy: IfNotPresent
   default_storage_class: local-path
   postgres:
-    image: docker.m.daocloud.io/library/postgres:17
+    image: "{{ private_image_registry_prefix }}/infra/postgres:17"
     storage: 50Gi
     storage_class: local-path
     secret_name: v9-postgres-auth
@@ -238,21 +268,21 @@ v9_infra:
     database: "{{ v9_postgres_database }}"
     username: "{{ v9_postgres_username }}"
   rabbitmq:
-    image: docker.m.daocloud.io/library/rabbitmq:3-management
+    image: "{{ private_image_registry_prefix }}/infra/rabbitmq:3-management"
     storage: 10Gi
     storage_class: local-path
     secret_name: v9-rabbitmq-auth
     service_name: v9-rabbitmq
     username: "{{ v9_rabbitmq_username }}"
   redis:
-    image: docker.m.daocloud.io/library/redis:7
+    image: "{{ private_image_registry_prefix }}/infra/redis:7"
     storage: 10Gi
     storage_class: local-path
     secret_name: v9-redis-auth
     service_name: v9-redis
   opensearch:
-    image: docker.m.daocloud.io/opensearchproject/opensearch:3.6.0
-    init_image: docker.m.daocloud.io/library/busybox:latest
+    image: "{{ private_image_registry_prefix }}/infra/opensearch:3.6.0"
+    init_image: "{{ private_image_registry_prefix }}/thirdparty/busybox:latest"
     storage: 50Gi
     storage_class: local-path
     service_name: v9-opensearch
@@ -267,8 +297,18 @@ v9_runtime:
   redis_url: "{{ (v9_redis_url | default('', true)) or ('redis://:' ~ v9_redis_password ~ '@' ~ v9_infra.redis.service_name ~ '.' ~ v9_infra.namespace ~ '.svc.cluster.local:6379/0') }}"
   opensearch_url: "{{ (v9_opensearch_url | default('', true)) or (v9_infra.opensearch.protocol ~ '://' ~ v9_infra.opensearch.service_name ~ '.' ~ v9_infra.namespace ~ '.svc.cluster.local:9200') }}"
 
-v9_services_image_registry: ""
+v9_services_image_registry: "{{ private_image_registry_prefix }}"
 v9_services_image_tag: alpha1
+business_image_base_images:
+  - source: docker.m.daocloud.io/library/python:3.12-slim
+    preferred: "{{ private_image_registry_prefix }}/base/python:3.12-slim"
+    timeout_seconds: 90
+  - source: node:22-alpine
+    preferred: "{{ private_image_registry_prefix }}/base/node:22-alpine"
+    timeout_seconds: 90
+  - source: nginx:1.30-alpine
+    preferred: "{{ private_image_registry_prefix }}/base/nginx:1.30-alpine"
+    timeout_seconds: 90
 v9_services_common_env:
   - name: APP_ENV
     value: alpha
@@ -361,6 +401,7 @@ core_agent_service:
   ref: main
   dockerfile: Dockerfile
   image_registry: "{{ v9_services_image_registry }}"
+  image_repository: svc/core-agent-service
   image_tag: "{{ v9_services_image_tag }}"
   postgres:
     urlSecretRef:
@@ -644,7 +685,7 @@ agent_content:
   foundation_vega:
     enabled: "{{ agent_content_foundation_vega_enabled | default(true) }}"
     engine: "{{ agent_content_foundation_vega_engine | default('mariadb') }}"
-    host: "{{ agent_content_foundation_vega_host | default((foundation.access_host | default('', true)) or (foundation.self_ip | default('', true)) or (ansible_default_ipv4.address | default('127.0.0.1')), true) }}"
+    host: "{{ agent_content_foundation_vega_host | default((foundation.self_ip | default('', true)) or (foundation.access_host | default('', true)) or (ansible_default_ipv4.address | default('127.0.0.1')), true) }}"
     port: "{{ agent_content_foundation_vega_port | default(9602) }}"
     username: "{{ agent_content_foundation_vega_username | default('sdba') }}"
     password: "{{ agent_content_foundation_vega_password | default(lookup('ansible.builtin.env', 'AGENT_CONTENT_FOUNDATION_VEGA_PASSWORD') | default('', true), true) }}"

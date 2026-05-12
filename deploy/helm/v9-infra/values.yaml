@@ -5,7 +5,7 @@ global:
   defaultStorageClass: local-path
 
 postgres:
-  image: docker.m.daocloud.io/library/postgres:17
+  image: anybackup-v9-cn-beijing.cr.volces.com/anybackup-ai/infra/postgres:17
   storage: 50Gi
   storageClass: ""
   secretName: v9-postgres-auth
@@ -20,7 +20,7 @@ postgres:
       memory: 4Gi
 
 rabbitmq:
-  image: docker.m.daocloud.io/library/rabbitmq:3-management
+  image: anybackup-v9-cn-beijing.cr.volces.com/anybackup-ai/infra/rabbitmq:3-management
   storage: 10Gi
   storageClass: ""
   secretName: v9-rabbitmq-auth
@@ -47,7 +47,7 @@ rabbitmq:
       memory: 4Gi
 
 redis:
-  image: docker.m.daocloud.io/library/redis:7
+  image: anybackup-v9-cn-beijing.cr.volces.com/anybackup-ai/infra/redis:7
   storage: 10Gi
   storageClass: ""
   secretName: v9-redis-auth
@@ -80,8 +80,8 @@ redis:
       memory: 4Gi
 
 opensearch:
-  image: docker.m.daocloud.io/opensearchproject/opensearch:3.6.0
-  initImage: docker.m.daocloud.io/library/busybox:latest
+  image: anybackup-v9-cn-beijing.cr.volces.com/anybackup-ai/infra/opensearch:3.6.0
+  initImage: anybackup-v9-cn-beijing.cr.volces.com/anybackup-ai/thirdparty/busybox:latest
   storage: 50Gi
   storageClass: ""
   serviceName: v9-opensearch

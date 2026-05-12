@@ -5,8 +5,9 @@ imagePullSecrets: []
 
 traefik:
   image:
-    registry: docker.m.daocloud.io
-    repository: library/traefik
+    registry: anybackup-v9-cn-beijing.cr.volces.com/anybackup-ai
+    repository: thirdparty/traefik
+    tag: v3.6.13
     pullPolicy: IfNotPresent
   deployment:
     additionalVolumes:

@@ -136,7 +136,7 @@ Official install command template:
 The real package URL is:
 
 ```text
-https://ftp.anybackup.ai/FoundationServer-Linux_el7_x64-9.0.0.0-alpha1-20260430-release-zh_CN-3.tar.gz
+https://ftp.anybackup.ai/FoundationServer-Linux_el7_x64-9.0.0.0-alpha1-20260507-release-zh_CN-6.tar.gz
 ```
 
 By default the installer first searches `/opt/backupsoft/FoundationServer-Linux_el7_x64-9.0.0.0*.tar.gz`. If a matching FoundationServer package already exists there, it is reused. If no matching package exists, the installer downloads the package URL above into `/opt/backupsoft/<url-basename>`. Customers should not need to pass `--foundation-package-path` in the normal path. For validation, a predownloaded package may still be placed elsewhere and passed through `--foundation-package-path` as an escape hatch.

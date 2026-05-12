@@ -83,11 +83,57 @@
         }
       }
 
+- name: Ensure business image Docker base images are available
+  ansible.builtin.shell: |
+    set -euo pipefail
+    source_image="{{ item.source }}"
+    preferred_image="{{ item.preferred | default('', true) }}"
+    fallback_image="{{ item.fallback | default('', true) }}"
+    timeout_seconds="{{ item.timeout_seconds | default(90) }}"
+
+    if docker image inspect "$source_image" >/dev/null 2>&1; then
+      echo "Base image already available: $source_image"
+      exit 0
+    fi
+
+    if [[ -n "$preferred_image" ]]; then
+      if docker image inspect "$preferred_image" >/dev/null 2>&1; then
+        docker tag "$preferred_image" "$source_image"
+        exit 0
+      fi
+
+      if timeout "$timeout_seconds" docker pull "$preferred_image"; then
+        docker tag "$preferred_image" "$source_image"
+        exit 0
+      fi
+
+      echo "Preferred base image pull failed or timed out for $preferred_image; trying source $source_image" >&2
+    fi
+
+    if timeout "$timeout_seconds" docker pull "$source_image"; then
+      exit 0
+    fi
+
+    if [[ -z "$fallback_image" ]]; then
+      echo "Unable to pull required base image $source_image and no fallback image is configured." >&2
+      exit 1
+    fi
+
+    echo "Primary base image pull failed or timed out for $source_image; trying fallback $fallback_image"
+    timeout "$timeout_seconds" docker pull "$fallback_image"
+    docker tag "$fallback_image" "$source_image"
+  args:
+    executable: /bin/bash
+  loop: "{{ business_image_base_images | default([]) }}"
+  loop_control:
+    label: "{{ item.source }}"
+
 - name: Build business service images from repository source
   ansible.builtin.command:
     argv:
       - docker
       - build
+      - --pull=false
       - --file
       - "{{ item.dockerfile }}"
       - --tag

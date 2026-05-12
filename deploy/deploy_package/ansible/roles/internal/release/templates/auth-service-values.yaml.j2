@@ -1,9 +1,9 @@
 keycloak:
   replicaCount: 1
   image:
-    registry: docker.aityp.com
-    repository: image/docker.io/keycloak/keycloak
-    tag: 26.5.1
+    registry: {{ (auth_service.keycloak.image_registry | default(private_image_registry_prefix)) | quote }}
+    repository: {{ (auth_service.keycloak.image_repository | default('thirdparty/keycloak')) | quote }}
+    tag: {{ (auth_service.keycloak.image_tag | default('26.5.1')) | quote }}
     pullPolicy: IfNotPresent
   database:
     vendor: postgres

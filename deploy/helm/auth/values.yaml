@@ -1,8 +1,8 @@
 keycloak:
   replicaCount: 1
   image:
-    registry: docker.aityp.com
-    repository: image/docker.io/keycloak/keycloak
+    registry: anybackup-v9-cn-beijing.cr.volces.com/anybackup-ai
+    repository: thirdparty/keycloak
     tag: 26.5.1
     pullPolicy: IfNotPresent
 

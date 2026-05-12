@@ -13,9 +13,18 @@
 
 - name: Copy smoke script to remote host
   ansible.builtin.copy:
-    src: "{{ package_root }}/docs/操作文档/cluster-smoke.sh"
+    src: "{{ package_root }}/scripts/smoke/cluster-smoke.sh"
     dest: "{{ remote_smoke_root }}/cluster-smoke.sh"
     mode: "0755"
+
+- name: Normalize remote smoke script line endings
+  ansible.builtin.command:
+    argv:
+      - sed
+      - -i
+      - 's/\r$//'
+      - "{{ remote_smoke_root }}/cluster-smoke.sh"
+  changed_when: false
 
 - name: Wait for V9 infra statefulsets
   ansible.builtin.command: "kubectl rollout status statefulset/{{ item }} -n {{ v9_infra.namespace }} --timeout={{ verify.timeout }}"

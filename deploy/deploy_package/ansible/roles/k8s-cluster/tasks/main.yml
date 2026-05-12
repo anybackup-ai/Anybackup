@@ -63,3 +63,320 @@
 - name: Print Kubernetes cluster summary
   ansible.builtin.debug:
     msg: "{{ k8s_cluster_nodes_after.stdout_lines }}"
+
+- name: Check local-path StorageClass exists
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - get
+      - storageclass
+      - "{{ k8s_cluster.local_path.storage_class | default(v9_infra.default_storage_class | default('local-path')) }}"
+  register: k8s_cluster_local_path_storageclass
+  changed_when: false
+  failed_when: false
+  when: k8s_cluster.local_path.enabled | default(true) | bool
+
+- name: Install local-path provisioner when StorageClass is missing
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - apply
+      - -f
+      - "{{ k8s_cluster.local_path.manifest_url }}"
+  register: k8s_cluster_local_path_apply
+  changed_when: "'created' in (k8s_cluster_local_path_apply.stdout | default('')) or 'configured' in (k8s_cluster_local_path_apply.stdout | default(''))"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster_local_path_storageclass.rc | default(1) != 0
+
+- name: Check local-path provisioner deployment exists
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - get
+      - deployment
+      - "{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+  register: k8s_cluster_local_path_deployment_check
+  changed_when: false
+  failed_when: false
+  when: k8s_cluster.local_path.enabled | default(true) | bool
+
+- name: Check local-path provisioner availability
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - get
+      - deployment
+      - "{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+      - -o
+      - "jsonpath={.status.availableReplicas}"
+  register: k8s_cluster_local_path_available
+  changed_when: false
+  failed_when: false
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+
+- name: Use primary local-path provisioner image
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - set
+      - image
+      - "deployment/{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+      - "local-path-provisioner={{ k8s_cluster.local_path.primary_image }}"
+  register: k8s_cluster_local_path_primary_image
+  changed_when: "'image updated' in (k8s_cluster_local_path_primary_image.stdout | default(''))"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.primary_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+    - k8s_cluster_local_path_available.stdout | default('0') | int < 1
+
+- name: Wait for local-path provisioner rollout with primary image
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - rollout
+      - status
+      - "deployment/{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+      - "--timeout={{ k8s_cluster.local_path.rollout_timeout | default('180s') }}"
+  register: k8s_cluster_local_path_primary_rollout
+  changed_when: false
+  failed_when: false
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+    - k8s_cluster_local_path_available.stdout | default('0') | int < 1
+
+- name: Check local-path fallback image endpoint before switching image
+  ansible.builtin.shell: |
+    set -euo pipefail
+    status="$(curl -k -sS -o /dev/null -w '%{http_code}' -I --connect-timeout 8 --max-time 20 "{{ k8s_cluster.local_path.fallback_registry_url }}")"
+    case "$status" in
+      200|401|403) exit 0 ;;
+      *) echo "Unexpected HTTP status from {{ k8s_cluster.local_path.fallback_registry_url }}: $status" >&2; exit 1 ;;
+    esac
+  args:
+    executable: /bin/bash
+  register: k8s_cluster_local_path_fallback_registry
+  changed_when: false
+  failed_when: false
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.fallback_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+    - k8s_cluster_local_path_available.stdout | default('0') | int < 1
+    - k8s_cluster_local_path_primary_rollout.rc | default(0) != 0
+
+- name: Pull fallback local-path provisioner image before switching
+  ansible.builtin.shell: |
+    set -euo pipefail
+    image="{{ k8s_cluster.local_path.fallback_image }}"
+    if command -v ctr >/dev/null 2>&1; then
+      timeout 300 ctr -n k8s.io images pull "$image"
+    elif command -v crictl >/dev/null 2>&1; then
+      timeout 300 crictl pull "$image"
+    elif command -v docker >/dev/null 2>&1; then
+      timeout 300 docker pull "$image"
+    else
+      echo "No ctr, crictl, or docker command is available to pre-pull $image; Kubernetes will pull it during rollout."
+    fi
+  args:
+    executable: /bin/bash
+  register: k8s_cluster_local_path_fallback_pull
+  changed_when: true
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.fallback_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+    - k8s_cluster_local_path_available.stdout | default('0') | int < 1
+    - k8s_cluster_local_path_primary_rollout.rc | default(0) != 0
+    - k8s_cluster_local_path_fallback_registry.rc | default(1) == 0
+
+- name: Stop when local-path fallback registry is unreachable
+  ansible.builtin.assert:
+    that:
+      - k8s_cluster_local_path_fallback_registry.rc == 0
+    fail_msg: >-
+      local-path provisioner primary image failed to become ready, and fallback
+      registry {{ k8s_cluster.local_path.fallback_registry_url }} is unreachable.
+      Fix image registry access or set k8s_cluster_local_path_fallback_image to
+      an accessible mirror, then rerun the installer.
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.fallback_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+    - k8s_cluster_local_path_available.stdout | default('0') | int < 1
+    - k8s_cluster_local_path_primary_rollout.rc | default(0) != 0
+
+- name: Use fallback local-path provisioner image
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - set
+      - image
+      - "deployment/{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+      - "local-path-provisioner={{ k8s_cluster.local_path.fallback_image }}"
+  register: k8s_cluster_local_path_fallback_image
+  changed_when: "'image updated' in (k8s_cluster_local_path_fallback_image.stdout | default(''))"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.fallback_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+    - k8s_cluster_local_path_available.stdout | default('0') | int < 1
+    - k8s_cluster_local_path_primary_rollout.rc | default(0) != 0
+    - k8s_cluster_local_path_fallback_registry.rc | default(1) == 0
+
+- name: Wait for local-path provisioner rollout with fallback image
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - rollout
+      - status
+      - "deployment/{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+      - "--timeout={{ k8s_cluster.local_path.rollout_timeout | default('180s') }}"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.fallback_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+    - k8s_cluster_local_path_available.stdout | default('0') | int < 1
+    - k8s_cluster_local_path_primary_rollout.rc | default(0) != 0
+    - k8s_cluster_local_path_fallback_registry.rc | default(1) == 0
+
+- name: Pull local-path helper image before PVC provisioning
+  ansible.builtin.shell: |
+    set -euo pipefail
+    image="{{ k8s_cluster.local_path.helper_image }}"
+    if command -v ctr >/dev/null 2>&1; then
+      timeout 300 ctr -n k8s.io images pull "$image"
+    elif command -v crictl >/dev/null 2>&1; then
+      timeout 300 crictl pull "$image"
+    elif command -v docker >/dev/null 2>&1; then
+      timeout 300 docker pull "$image"
+    else
+      echo "No ctr, crictl, or docker command is available to pre-pull $image; Kubernetes will pull it during PVC provisioning."
+    fi
+  args:
+    executable: /bin/bash
+  register: k8s_cluster_local_path_helper_pull
+  changed_when: true
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.helper_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+
+- name: Configure local-path helper pod image
+  ansible.builtin.shell: |
+    set -euo pipefail
+    python3 - <<'PY'
+    import json
+    import os
+    import re
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    namespace = os.environ["LOCAL_PATH_NAMESPACE"]
+    configmap = os.environ["LOCAL_PATH_CONFIGMAP"]
+    image = os.environ["LOCAL_PATH_HELPER_IMAGE"]
+
+    raw = subprocess.check_output(
+        ["kubectl", "-n", namespace, "get", "cm", configmap, "-o", "json"],
+        text=True,
+    )
+    data = json.loads(raw)
+    helper = data["data"].get("helperPod.yaml", "")
+    if f"image: {image}" in helper:
+        print("unchanged")
+        sys.exit(0)
+
+    updated = re.sub(r"(?m)^(\s*image:\s*).*$", rf"\1{image}", helper, count=1)
+    if updated == helper:
+        raise SystemExit(f"helperPod.yaml in {configmap} has no image field")
+
+    data["data"]["helperPod.yaml"] = updated
+    for field in ["creationTimestamp", "managedFields", "resourceVersion", "uid"]:
+        data["metadata"].pop(field, None)
+
+    path = Path("/tmp/local-path-config.json")
+    path.write_text(json.dumps(data, ensure_ascii=False))
+    subprocess.check_call(["kubectl", "apply", "-f", str(path)])
+    print("changed")
+    PY
+  args:
+    executable: /bin/bash
+  environment:
+    LOCAL_PATH_NAMESPACE: "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+    LOCAL_PATH_CONFIGMAP: "{{ k8s_cluster.local_path.helper_configmap | default('local-path-config') }}"
+    LOCAL_PATH_HELPER_IMAGE: "{{ k8s_cluster.local_path.helper_image }}"
+  register: k8s_cluster_local_path_helper_config
+  changed_when: "'changed' in (k8s_cluster_local_path_helper_config.stdout | default(''))"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.helper_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+
+- name: Restart local-path provisioner after helper image change
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - rollout
+      - restart
+      - "deployment/{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster_local_path_helper_config is changed
+
+- name: Wait for local-path provisioner rollout after helper image change
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - rollout
+      - status
+      - "deployment/{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+      - "--timeout={{ k8s_cluster.local_path.rollout_timeout | default('180s') }}"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster_local_path_helper_config is changed
+
+- name: Mark local-path StorageClass as default when requested
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - patch
+      - storageclass
+      - "{{ k8s_cluster.local_path.storage_class | default(v9_infra.default_storage_class | default('local-path')) }}"
+      - -p
+      - '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+  register: k8s_cluster_local_path_default_patch
+  changed_when: "'patched' in (k8s_cluster_local_path_default_patch.stdout | default(''))"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.make_default | default(true) | bool
+
+- name: Verify local-path StorageClass is available
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - get
+      - storageclass
+      - "{{ k8s_cluster.local_path.storage_class | default(v9_infra.default_storage_class | default('local-path')) }}"
+  changed_when: false
+  when: k8s_cluster.local_path.enabled | default(true) | bool

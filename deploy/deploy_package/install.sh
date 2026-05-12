@@ -501,6 +501,26 @@ case "${DEPLOYMENT_PROFILE}" in
     ;;
 esac
 
+default_foundation_cli_endpoint() {
+  local host=""
+  if [[ -n "${FOUNDATION_ENDPOINT}" ]]; then
+    printf '%s\n' "${FOUNDATION_ENDPOINT}"
+    return
+  fi
+  if [[ -n "${FOUNDATION_SELF_IP}" ]]; then
+    host="${FOUNDATION_SELF_IP}"
+  elif [[ -n "${FOUNDATION_ACCESS_HOST}" ]]; then
+    host="${FOUNDATION_ACCESS_HOST}"
+  fi
+  if [[ -n "${host}" ]]; then
+    printf 'https://%s:9600\n' "${host}"
+  fi
+}
+
+if [[ -z "${CORE_AGENT_FOUNDATION_ENDPOINT}" && -n "${CORE_AGENT_FOUNDATION_AK}" && -n "${CORE_AGENT_FOUNDATION_SK}" ]]; then
+  CORE_AGENT_FOUNDATION_ENDPOINT="$(default_foundation_cli_endpoint)"
+fi
+
 foundation_cli_arg_count=0
 for foundation_cli_value in "${CORE_AGENT_FOUNDATION_ENDPOINT}" "${CORE_AGENT_FOUNDATION_AK}" "${CORE_AGENT_FOUNDATION_SK}"; do
   if [[ -n "${foundation_cli_value}" ]]; then

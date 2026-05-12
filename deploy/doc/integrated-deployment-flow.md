@@ -76,7 +76,7 @@ swr.cn-east-3.myhuaweicloud.com/kweaver-ai/dip/mf-model-api:0.6.0
 - 不存在才下载默认包：
 
 ```text
-https://ftp.anybackup.ai/FoundationServer-Linux_el7_x64-9.0.0.0-alpha1-20260430-release-zh_CN-3.tar.gz
+https://ftp.anybackup.ai/FoundationServer-Linux_el7_x64-9.0.0.0-alpha1-20260507-release-zh_CN-6.tar.gz
 ```
 
 - 只调用 Foundation 官方安装脚本，不修改 Foundation 包内容。

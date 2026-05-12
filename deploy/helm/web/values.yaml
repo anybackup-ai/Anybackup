@@ -1,7 +1,7 @@
 replicaCount: 2
 
 image:
-  repository: registry.example.com/anybackup/agent-web
+  repository: anybackup-v9-cn-beijing.cr.volces.com/anybackup-ai/svc/agent-web
   pullPolicy: IfNotPresent
   tag: latest
 

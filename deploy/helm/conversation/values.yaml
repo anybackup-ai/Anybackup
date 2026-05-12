@@ -1,8 +1,8 @@
 replicaCount: 1
 
 image:
-  registry: docker.aityp.com
-  repository: image/docker.io/anybackup/conversation-service
+  registry: anybackup-v9-cn-beijing.cr.volces.com/anybackup-ai
+  repository: svc/conversation-service
   tag: 0.1.0
   pullPolicy: IfNotPresent
 
