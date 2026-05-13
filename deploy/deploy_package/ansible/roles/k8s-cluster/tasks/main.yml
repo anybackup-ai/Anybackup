@@ -21,15 +21,201 @@
       - "Existing nodes: {{ k8s_cluster_nodes_before.stdout_lines | default([]) | join(', ') if k8s_cluster_present_before else 'none' }}"
   when: k8s_cluster_present_before
 
-- name: Stop when Kubernetes is absent and no bootstrap command is configured
-  ansible.builtin.assert:
-    that:
-      - k8s_cluster.bootstrap_command | default('') | length > 0
-    fail_msg: >-
-      Kubernetes is not usable on the target host, and k8s_cluster.bootstrap_command
-      is empty. Configure k8s_cluster_bootstrap_command for this OS/environment, or
-      bootstrap Kubernetes manually before running the integrated deployment.
-  when: not k8s_cluster_present_before
+- name: Ensure KWeaver source parent exists for official Kubernetes bootstrap
+  ansible.builtin.file:
+    path: "{{ kweaver_online.repo_dir | dirname }}"
+    state: directory
+    mode: "0755"
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Check KWeaver source for official Kubernetes bootstrap
+  ansible.builtin.stat:
+    path: "{{ kweaver_online.repo_dir }}/.git"
+  register: k8s_cluster_kweaver_repo_git_dir
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Clone KWeaver Core source for official Kubernetes bootstrap when absent
+  ansible.builtin.command:
+    argv:
+      - git
+      - clone
+      - "{{ kweaver_online.repo_url }}"
+      - "{{ kweaver_online.repo_dir }}"
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+    - not ((k8s_cluster_kweaver_repo_git_dir.stat.exists | default(false)) | bool)
+
+- name: Fetch KWeaver source refs for official Kubernetes bootstrap
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ kweaver_online.repo_dir }}"
+      - fetch
+      - --prune
+      - --tags
+      - origin
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Check out KWeaver Core release ref for official Kubernetes bootstrap
+  ansible.builtin.shell: |
+    set -euo pipefail
+    for ref in {{ ([kweaver_online.git_ref, 'release/' ~ kweaver_online.version, 'v' ~ kweaver_online.version, kweaver_online.version]) | map('quote') | join(' ') }}; do
+      [ -n "${ref}" ] || continue
+      if git -C {{ kweaver_online.repo_dir | quote }} rev-parse --verify --quiet "origin/${ref}^{commit}" >/dev/null; then
+        git -C {{ kweaver_online.repo_dir | quote }} checkout --force -B "deploy-{{ kweaver_online.version }}" "origin/${ref}"
+        exit 0
+      fi
+      if git -C {{ kweaver_online.repo_dir | quote }} rev-parse --verify --quiet "${ref}^{commit}" >/dev/null; then
+        git -C {{ kweaver_online.repo_dir | quote }} checkout --force "${ref}"
+        exit 0
+      fi
+    done
+    echo "Unable to find KWeaver Core source ref for Kubernetes bootstrap." >&2
+    exit 1
+  args:
+    executable: /bin/bash
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Ensure official KWeaver deploy.sh is executable for Kubernetes bootstrap
+  ansible.builtin.file:
+    path: "{{ kweaver_online.deploy_dir }}/deploy.sh"
+    mode: "0755"
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Clean partial Kubernetes bootstrap state before KWeaver official installer when absent
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if command -v kubeadm >/dev/null 2>&1; then
+      kubeadm reset -f || true
+    fi
+    rm -rf \
+      /etc/kubernetes \
+      /var/lib/etcd \
+      /var/lib/kubelet \
+      /var/lib/cni \
+      /etc/cni/net.d \
+      /run/flannel \
+      /root/.kube
+    ip link delete cni0 2>/dev/null || true
+    ip link delete flannel.1 2>/dev/null || true
+    if command -v iptables-save >/dev/null 2>&1 && command -v iptables-restore >/dev/null 2>&1; then
+      iptables-save | grep -v -E 'KUBE|CNI|FLANNEL' | iptables-restore || true
+    fi
+  args:
+    executable: /bin/bash
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Align Kubernetes yum repo for KWeaver official installer when absent
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+      mkdir -p /etc/yum.repos.d
+      cat > /etc/yum.repos.d/kubernetes.repo <<EOF
+    [kubernetes]
+    name=Kubernetes (Aliyun mirror)
+    baseurl={{ k8s_cluster.official_installer.rpm_repo_baseurl }}
+    enabled=1
+    gpgcheck=1
+    gpgkey={{ k8s_cluster.official_installer.rpm_repo_gpgkey }}
+    EOF
+      if command -v dnf >/dev/null 2>&1; then
+        dnf clean metadata
+        dnf makecache --disablerepo='*' --enablerepo=kubernetes
+      else
+        yum clean metadata
+        yum makecache --disablerepo='*' --enablerepo=kubernetes
+      fi
+    fi
+  args:
+    executable: /bin/bash
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Align Docker CE yum repo before KWeaver official installer when absent
+  ansible.builtin.shell: |
+    set -euo pipefail
+    repo="/etc/yum.repos.d/docker-ce.repo"
+    mirror='{{ k8s_cluster.official_installer.docker_ce_repo_mirror_baseurl }}'
+    changed=false
+
+    if [[ -f "$repo" ]] && grep -q 'download.docker.com/linux/centos' "$repo"; then
+      cp -a "$repo" "${repo}.anybackup.bak" 2>/dev/null || true
+      sed -i -E "s#^baseurl=https?://download\\.docker\\.com/linux/centos/.+#baseurl=${mirror}#g" "$repo"
+      changed=true
+    fi
+
+    if [[ "$changed" == "true" ]]; then
+      echo changed
+    else
+      echo unchanged
+    fi
+  args:
+    executable: /bin/bash
+  register: k8s_cluster_docker_ce_repo_align
+  changed_when: "'changed' in (k8s_cluster_docker_ce_repo_align.stdout | default(''))"
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Remove Kubernetes packages outside KWeaver official minor when absent
+  ansible.builtin.shell: |
+    set -euo pipefail
+    desired_prefix="{{ k8s_cluster.official_installer.package_version_prefix }}"
+    mismatch=false
+
+    if command -v rpm >/dev/null 2>&1; then
+      for pkg in kubeadm kubelet kubectl kubernetes-cni; do
+        if ! rpm -q "$pkg" >/dev/null 2>&1; then
+          continue
+        fi
+        version="$(rpm -q --qf '%{VERSION}' "$pkg")"
+        if [[ -n "$version" && "$version" != "$desired_prefix"* ]]; then
+          echo "$pkg version $version does not match $desired_prefix"
+          mismatch=true
+        fi
+      done
+      if [[ "$mismatch" == "true" ]]; then
+        if command -v dnf >/dev/null 2>&1; then
+          dnf remove -y kubeadm kubelet kubectl kubernetes-cni cri-tools || true
+        else
+          yum remove -y kubeadm kubelet kubectl kubernetes-cni cri-tools || true
+        fi
+      fi
+    elif command -v dpkg-query >/dev/null 2>&1; then
+      for pkg in kubeadm kubelet kubectl kubernetes-cni; do
+        if ! dpkg-query -W "$pkg" >/dev/null 2>&1; then
+          continue
+        fi
+        version="$(dpkg-query -W -f='${Version}' "$pkg")"
+        if [[ -n "$version" && "$version" != "$desired_prefix"* ]]; then
+          echo "$pkg version $version does not match $desired_prefix"
+          mismatch=true
+        fi
+      done
+      if [[ "$mismatch" == "true" ]]; then
+        apt-get remove -y kubeadm kubelet kubectl kubernetes-cni cri-tools || true
+      fi
+    fi
+  args:
+    executable: /bin/bash
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
 
 - name: Bootstrap Kubernetes when absent and explicitly configured
   ansible.builtin.shell: "{{ k8s_cluster.bootstrap_command }}"
@@ -38,6 +224,27 @@
   when:
     - not k8s_cluster_present_before
     - k8s_cluster.bootstrap_command | default('') | length > 0
+
+- name: Bootstrap Kubernetes with KWeaver official k8s installer when absent
+  ansible.builtin.command:
+    argv:
+      - ./deploy.sh
+      - k8s
+      - install
+  args:
+    chdir: "{{ kweaver_online.deploy_dir }}"
+  environment:
+    INGRESS_NGINX_HOSTNETWORK: "false"
+    INGRESS_NGINX_CLASS: "{{ ingress.class }}"
+    INGRESS_NGINX_HTTP_PORT: "{{ ingress.managed_nodeport.http_node_port | string }}"
+    INGRESS_NGINX_HTTPS_PORT: "{{ ingress.managed_nodeport.https_node_port | string }}"
+    AUTO_INSTALL_INGRESS_NGINX: "true"
+    IMAGE_REGISTRY: "{{ kweaver.image_registry }}"
+    K8S_RPM_REPO_BASEURL: "{{ k8s_cluster.official_installer.rpm_repo_baseurl }}"
+    K8S_RPM_REPO_GPGKEY: "{{ k8s_cluster.official_installer.rpm_repo_gpgkey }}"
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
 
 - name: Verify Kubernetes cluster after bootstrap or reuse
   ansible.builtin.command:

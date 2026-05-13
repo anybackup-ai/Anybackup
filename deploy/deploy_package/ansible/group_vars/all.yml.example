@@ -16,6 +16,12 @@ private_image_registry_prefix: "{{ private_image_registry_host_effective }}/{{ p
 k8s_cluster:
   bootstrap_command: "{{ k8s_cluster_bootstrap_command | default('') }}"
   require_ready_nodes: "{{ k8s_cluster_require_ready_nodes | default(true) }}"
+  official_installer:
+    kubernetes_minor: "{{ k8s_cluster_official_kubernetes_minor | default('v1.28') }}"
+    package_version_prefix: "{{ k8s_cluster_official_package_version_prefix | default('1.28') }}"
+    rpm_repo_baseurl: "{{ k8s_cluster_official_rpm_repo_baseurl | default('https://mirrors.aliyun.com/kubernetes-new/core/stable/' ~ (k8s_cluster_official_kubernetes_minor | default('v1.28')) ~ '/rpm/') }}"
+    rpm_repo_gpgkey: "{{ k8s_cluster_official_rpm_repo_gpgkey | default('https://mirrors.aliyun.com/kubernetes-new/core/stable/' ~ (k8s_cluster_official_kubernetes_minor | default('v1.28')) ~ '/rpm/repodata/repomd.xml.key') }}"
+    docker_ce_repo_mirror_baseurl: "{{ k8s_cluster_official_docker_ce_repo_mirror_baseurl | default('https://mirrors.aliyun.com/docker-ce/linux/centos/$releasever/$basearch/stable') }}"
   local_path:
     enabled: "{{ k8s_cluster_local_path_enabled | default(true) }}"
     storage_class: "{{ k8s_cluster_local_path_storage_class | default(v9_infra.default_storage_class | default('local-path')) }}"
@@ -299,6 +305,7 @@ v9_runtime:
 
 v9_services_image_registry: "{{ private_image_registry_prefix }}"
 v9_services_image_tag: alpha1
+business_image_build_enabled: "{{ business_image_build_enabled_override | default(false) }}"
 business_image_base_images:
   - source: docker.m.daocloud.io/library/python:3.12-slim
     preferred: "{{ private_image_registry_prefix }}/base/python:3.12-slim"

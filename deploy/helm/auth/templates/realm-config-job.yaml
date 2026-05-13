@@ -1,6 +1,7 @@
 {{- if .Values.keycloak.realm.accessTokenLifespan }}
 {{- $relativePath := trimSuffix "/" (.Values.keycloak.http.relativePath | default "") }}
 {{- $realmName := .Values.keycloak.realm.name | default "master" }}
+{{- $realmConfigImage := .Values.keycloak.realmConfig.image }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -21,8 +22,8 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: realm-config
-          image: "{{ .Values.keycloak.image.registry }}/{{ .Values.keycloak.image.repository }}:{{ .Values.keycloak.image.tag }}"
-          imagePullPolicy: {{ .Values.keycloak.image.pullPolicy }}
+          image: "{{ $realmConfigImage.registry }}/{{ $realmConfigImage.repository }}:{{ $realmConfigImage.tag }}"
+          imagePullPolicy: {{ $realmConfigImage.pullPolicy }}
           env:
             - name: KEYCLOAK_ADMIN_USERNAME
               value: {{ .Values.keycloak.bootstrapAdmin.username | quote }}
@@ -37,27 +38,91 @@ spec:
               value: {{ $realmName | quote }}
             - name: ACCESS_TOKEN_LIFESPAN
               value: {{ .Values.keycloak.realm.accessTokenLifespan | quote }}
+            - name: REALM_CONFIG_RETRIES
+              value: {{ .Values.keycloak.realmConfig.retries | default 60 | quote }}
+            - name: REALM_CONFIG_RETRY_SLEEP_SECONDS
+              value: {{ .Values.keycloak.realmConfig.retrySleepSeconds | default 5 | quote }}
           command:
             - /bin/sh
             - -ec
             - |
-              for attempt in $(seq 1 60); do
-                if /opt/keycloak/bin/kcadm.sh config credentials \
-                  --server "${KEYCLOAK_SERVER}" \
-                  --realm "${KEYCLOAK_REALM}" \
-                  --user "${KEYCLOAK_ADMIN_USERNAME}" \
-                  --password "${KEYCLOAK_ADMIN_PASSWORD}"; then
-                  break
-                fi
-                if [ "${attempt}" -eq 60 ]; then
-                  echo "Keycloak admin login failed after ${attempt} attempts" >&2
-                  exit 1
-                fi
-                sleep 5
-              done
+              python3 - <<'PY'
+              import json
+              import os
+              import sys
+              import time
+              import urllib.error
+              import urllib.parse
+              import urllib.request
 
-              /opt/keycloak/bin/kcadm.sh update "realms/${KEYCLOAK_REALM}" \
-                -s "accessTokenLifespan=${ACCESS_TOKEN_LIFESPAN}"
-              /opt/keycloak/bin/kcadm.sh get "realms/${KEYCLOAK_REALM}" \
-                --fields realm,accessTokenLifespan
+              server = os.environ["KEYCLOAK_SERVER"].rstrip("/")
+              realm = os.environ["KEYCLOAK_REALM"]
+              username = os.environ["KEYCLOAK_ADMIN_USERNAME"]
+              password = os.environ["KEYCLOAK_ADMIN_PASSWORD"]
+              access_token_lifespan = int(os.environ["ACCESS_TOKEN_LIFESPAN"])
+              retries = int(os.environ.get("REALM_CONFIG_RETRIES", "60"))
+              retry_sleep = int(os.environ.get("REALM_CONFIG_RETRY_SLEEP_SECONDS", "5"))
+
+              forwarded_headers = {
+                  "X-Forwarded-Proto": "https",
+                  "X-Forwarded-Port": "443",
+              }
+
+              def url(path):
+                  return f"{server}{path}"
+
+              def request(method, target, data=None, headers=None):
+                  request_headers = {}
+                  request_headers.update(forwarded_headers)
+                  if headers:
+                      request_headers.update(headers)
+                  req = urllib.request.Request(target, data=data, headers=request_headers, method=method)
+                  try:
+                      with urllib.request.urlopen(req, timeout=20) as response:
+                          return response.read().decode("utf-8")
+                  except urllib.error.HTTPError as exc:
+                      body = exc.read().decode("utf-8", errors="replace")
+                      raise RuntimeError(f"HTTP {exc.code} from {target}: {body}") from exc
+
+              realm_path = urllib.parse.quote(realm, safe="")
+              token_url = url(f"/realms/{realm_path}/protocol/openid-connect/token")
+              token = None
+              for attempt in range(1, retries + 1):
+                  form = urllib.parse.urlencode({
+                      "client_id": "admin-cli",
+                      "grant_type": "password",
+                      "username": username,
+                      "password": password,
+                  }).encode("utf-8")
+                  try:
+                      raw = request(
+                          "POST",
+                          token_url,
+                          data=form,
+                          headers={"Content-Type": "application/x-www-form-urlencoded"},
+                      )
+                      token = json.loads(raw)["access_token"]
+                      break
+                  except Exception as exc:
+                      if attempt == retries:
+                          raise
+                      print(f"Keycloak admin login attempt {attempt}/{retries} failed: {exc}", file=sys.stderr)
+                      time.sleep(retry_sleep)
+
+              payload = json.dumps({"accessTokenLifespan": access_token_lifespan}).encode("utf-8")
+              auth_headers = {
+                  "Authorization": f"Bearer {token}",
+                  "Content-Type": "application/json",
+              }
+              request("PUT", url(f"/admin/realms/{realm_path}"), data=payload, headers=auth_headers)
+              raw = request("GET", url(f"/admin/realms/{realm_path}"), headers={"Authorization": f"Bearer {token}"})
+              state = json.loads(raw)
+              print(json.dumps(
+                  {
+                      "realm": state.get("realm"),
+                      "accessTokenLifespan": state.get("accessTokenLifespan"),
+                  },
+                  ensure_ascii=False,
+              ))
+              PY
 {{- end }}

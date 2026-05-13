@@ -15,6 +15,15 @@ def existing_build_import_roles():
 
 
 class BusinessBuildImportTests(unittest.TestCase):
+    def test_business_image_build_is_opt_in_for_customer_deployments(self):
+        group_vars = (ROOT / "ansible/group_vars/all.yml").read_text(encoding="utf-8")
+        app_services = (ROOT / "ansible/roles/app-services/tasks/main.yml").read_text(encoding="utf-8")
+
+        self.assertIn("business_image_build_enabled: \"{{ business_image_build_enabled_override | default(false) }}\"", group_vars)
+        self.assertIn("business_image_build_enabled | bool", app_services)
+        self.assertIn("internal/build_import", app_services)
+        self.assertIn("Release services with Helm", app_services)
+
     def test_agent_web_nginx_template_uses_agent_web_source_dir(self):
         checked = 0
         for path in existing_build_import_roles():

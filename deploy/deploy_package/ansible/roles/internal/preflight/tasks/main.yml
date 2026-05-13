@@ -94,9 +94,8 @@
   ansible.builtin.set_fact:
     preflight_required_commands: >-
       {{
-        ["kubectl", "helm", "git"]
-        + (["docker", "tar", "kweaver"] if deployment_profile == "full" else [])
-        + (["python3", "kweaver"] if deployment_profile == "agent-content-only" else [])
+        ["git", "tar"]
+        + (["python3"] if deployment_profile in ["full", "agent-content-only"] else [])
       }}
 
 - name: Check remote command availability
@@ -115,23 +114,6 @@
   loop: "{{ preflight_command_check.results }}"
   loop_control:
     label: "{{ item.item }}"
-
-- name: Detect cluster image import command
-  ansible.builtin.shell: |
-    set -euo pipefail
-    if command -v k3s >/dev/null 2>&1; then
-      echo "k3s ctr images import"
-    elif command -v ctr >/dev/null 2>&1; then
-      echo "ctr -n k8s.io images import"
-    else
-      exit 1
-    fi
-  register: image_import_command_detect
-  changed_when: false
-
-- name: Set cluster image import command
-  ansible.builtin.set_fact:
-    image_import_command: "{{ image_import_command_detect.stdout }}"
 
 - name: Ensure remote working directories exist
   ansible.builtin.file:

@@ -1,4 +1,8 @@
 ---
+- name: Ensure deployment tooling for Agent content is present
+  ansible.builtin.import_role:
+    name: internal/tooling
+
 - name: Deploy AnyBackup Agent content only
   ansible.builtin.import_role:
     name: internal/agent_content

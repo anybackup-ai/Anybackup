@@ -10,11 +10,39 @@ def read_text(relative_path: str) -> str:
 
 
 class K8sLocalPathStorageTests(unittest.TestCase):
+    def test_preflight_defers_cluster_runtime_commands_until_after_bootstrap(self):
+        preflight = read_text("ansible/roles/internal/preflight/tasks/main.yml")
+
+        self.assertNotIn('"kubectl", "helm"', preflight)
+        self.assertNotIn('"docker", "tar", "kweaver"', preflight)
+        self.assertNotIn("Detect cluster image import command", preflight)
+
     def test_preflight_does_not_require_storageclass_before_k8s_bootstrap(self):
         preflight = read_text("ansible/roles/internal/preflight/tasks/main.yml")
 
         self.assertNotIn("kubectl get storageclass", preflight)
         self.assertNotIn("Required StorageClass", preflight)
+
+    def test_k8s_cluster_can_use_kweaver_official_bootstrap_when_absent(self):
+        tasks = read_text("ansible/roles/k8s-cluster/tasks/main.yml")
+        group_vars = read_text("ansible/group_vars/all.yml")
+
+        self.assertIn("Bootstrap Kubernetes with KWeaver official k8s installer when absent", tasks)
+        self.assertIn("./deploy.sh", tasks)
+        self.assertIn("k8s", tasks)
+        self.assertIn("install", tasks)
+        self.assertIn('INGRESS_NGINX_HOSTNETWORK: "false"', tasks)
+        self.assertIn('INGRESS_NGINX_HTTP_PORT: "{{ ingress.managed_nodeport.http_node_port | string }}"', tasks)
+        self.assertIn('INGRESS_NGINX_HTTPS_PORT: "{{ ingress.managed_nodeport.https_node_port | string }}"', tasks)
+        self.assertIn("official_installer:", group_vars)
+        self.assertIn("kubernetes_minor: \"{{ k8s_cluster_official_kubernetes_minor | default('v1.28') }}\"", group_vars)
+        self.assertIn("Align Kubernetes yum repo for KWeaver official installer when absent", tasks)
+        self.assertIn("Align Docker CE yum repo before KWeaver official installer when absent", tasks)
+        self.assertIn("docker_ce_repo_mirror_baseurl", tasks)
+        self.assertIn("mirrors.aliyun.com/docker-ce/linux/centos", group_vars)
+        self.assertIn("Remove Kubernetes packages outside KWeaver official minor when absent", tasks)
+        self.assertIn("K8S_RPM_REPO_BASEURL", tasks)
+        self.assertIn("not k8s_cluster_present_before", tasks)
 
     def test_k8s_cluster_installs_local_path_after_cluster_is_ready(self):
         tasks = read_text("ansible/roles/k8s-cluster/tasks/main.yml")

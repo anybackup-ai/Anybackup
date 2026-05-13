@@ -699,7 +699,7 @@ if [[ "${DEPLOYMENT_PROFILE}" == "full" ]]; then
   echo "=== 5. Deploy AnyBackup Agent content ==="
   run_stage deploy-agent-content
 
-  echo "=== 6. Build, import, and release business services ==="
+  echo "=== 6. Release business services ==="
   run_stage app-services
 fi
 

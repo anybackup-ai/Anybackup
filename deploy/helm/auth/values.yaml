@@ -17,6 +17,15 @@ keycloak:
     name: master
     accessTokenLifespan: 1800
 
+  realmConfig:
+    image:
+      registry: anybackup-v9-cn-beijing.cr.volces.com/anybackup-ai
+      repository: base/python
+      tag: 3.12-slim
+      pullPolicy: IfNotPresent
+    retries: 60
+    retrySleepSeconds: 5
+
   database:
     vendor: postgres
     host: postgresql.example.internal

@@ -2,7 +2,9 @@
 - name: Build and import business images
   ansible.builtin.include_role:
     name: internal/build_import
-  when: deployment_profile == "full"
+  when:
+    - deployment_profile == "full"
+    - business_image_build_enabled | bool
 
 - name: Release services with Helm
   ansible.builtin.include_role:

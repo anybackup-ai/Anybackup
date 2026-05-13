@@ -243,7 +243,7 @@ The integrated deployment completes the following steps in order:
 6. Configure KWeaver models.
 7. Import knowledge-base data and data connections.
 8. Deploy BKN, ContextLoader, skills, and Agent.
-9. Build and publish AnyBackup business services.
+9. Publish AnyBackup business services. Service images are pulled from the configured registry by default.
 10. Publish the Web access entrypoint.
 11. Run post-deployment validation.
 
