@@ -235,3 +235,36 @@ Contributions are welcome as the project evolves. Before submitting a pull reque
 4. Run checks for the component you modified.
 
 Detailed contribution guidelines will be expanded as the public development workflow matures.
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+**Agent fails to start after deployment**
+- Verify the Kubernetes cluster has sufficient resources (minimum 4 CPU cores, 8GB RAM recommended).
+- Check that all required images are accessible and properly pulled.
+- Review pod logs: `kubectl logs -n anybackup <pod-name>`.
+
+**Foundation cannot connect to Agent**
+- Confirm the `foundation-self-ip` matches the actual private IP of the Foundation host.
+- Ensure network policies allow traffic on the configured communication port (default: 8080).
+- Check that the Foundation service is running: `systemctl status anybackup-foundation`.
+
+**Backup jobs hang or time out**
+- Verify the Anybackup Client is installed on the target workload host.
+- Confirm database credentials and connection parameters are correct.
+- Check disk space on the storage target — insufficient space will cause silent failures.
+
+**Recovery plan not generating**
+- Ensure the AI model endpoint is reachable and credentials are valid.
+- Check model logs for authentication or rate-limit errors.
+- Verify the workload metadata is complete in the Client configuration.
+
+### Getting Help
+
+If you encounter an issue not covered here:
+1. Search [GitHub Issues](https://github.com/anybackup-ai/Anybackup/issues) for similar reports.
+2. For questions, use [GitHub Discussions](https://github.com/anybackup-ai/Anybackup/discussions).
+3. When reporting a bug, include: product version, deployment method, error logs, and reproduction steps.
