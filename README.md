@@ -1,5 +1,22 @@
 # Anybackup
 
+
+## Quick Start
+
+Install with:
+```bash
+pip install anybackup
+```
+**Requirements:** Python 3.10+
+
+Or clone and run:
+```bash
+git clone https://github.com/anybackup-ai/anybackup.git
+cd anybackup
+python setup.py install
+```
+
+
 <p align="center">
   <a href="https://github.com/anybackup-ai/Anybackup/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-SSPL--1.0-blue.svg" alt="License"></a>
   <a href="https://github.com/anybackup-ai/Anybackup/blob/main/VERSION.txt"><img src="https://img.shields.io/badge/version-9.0.0--alpha-orange.svg" alt="Version"></a>
