@@ -1,7 +1,8 @@
 traefik:
   image:
-    registry: docker.m.daocloud.io
-    repository: library/traefik
+    registry: {{ (api_gateway_service.traefik.image_registry | default(private_image_registry_prefix)) | quote }}
+    repository: {{ (api_gateway_service.traefik.image_repository | default('thirdparty/traefik')) | quote }}
+    tag: {{ (api_gateway_service.traefik.image_tag | default('v3.6.13')) | quote }}
     pullPolicy: IfNotPresent
   service:
     enabled: true

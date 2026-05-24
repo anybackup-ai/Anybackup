@@ -25,6 +25,10 @@
     - deployment_profile == "full"
     - kweaver_image_overrides.enabled | default(true) | bool
 
+- name: Ensure deployment tooling needed after KWeaver Core is present
+  ansible.builtin.include_role:
+    name: internal/tooling
+
 - name: Configure KWeaver CLI for the freshly installed local platform
   ansible.builtin.include_role:
     name: internal/kweaver_cli_config

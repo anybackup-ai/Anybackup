@@ -34,13 +34,27 @@ class FoundationEndpointAndClientTests(unittest.TestCase):
         self.assertIn("--agent-content-foundation-vega-username", install_sh)
         self.assertIn("AGENT_CONTENT_FOUNDATION_OPENSEARCH_PASSWORD", install_sh)
 
+    def test_install_sh_defaults_foundation_cli_endpoint_when_only_aksk_is_supplied(self):
+        install_sh = read_text("install.sh")
+
+        default_endpoint = install_sh.index("default_foundation_cli_endpoint()")
+        apply_default = install_sh.index('CORE_AGENT_FOUNDATION_ENDPOINT="$(default_foundation_cli_endpoint)"')
+        validate_complete_set = install_sh.index("foundation_cli_arg_count=0")
+        self_ip_default = install_sh.index('host="${FOUNDATION_SELF_IP}"')
+        access_host_fallback = install_sh.index('host="${FOUNDATION_ACCESS_HOST}"')
+
+        self.assertLess(default_endpoint, validate_complete_set)
+        self.assertLess(apply_default, validate_complete_set)
+        self.assertLess(self_ip_default, access_host_fallback)
+        self.assertIn("printf 'https://%s:9600\\n' \"${host}\"", install_sh)
+
     def test_group_vars_define_foundation_endpoint_and_same_host_client_defaults(self):
         group_vars = read_text("ansible/group_vars/all.yml")
 
         self.assertIn("endpoint_port", group_vars)
         self.assertIn("foundation_endpoint", group_vars)
         self.assertIn("FOUNDATION_CLI_ENDPOINT", group_vars)
-        self.assertIn("FoundationServer-Linux_el7_x64-9.0.0.0-alpha1-20260430-release-zh_CN-3.tar.gz", group_vars)
+        self.assertIn("FoundationServer-Linux_el7_x64-9.0.0.0-alpha1-20260507-release-zh_CN-6.tar.gz", group_vars)
         self.assertIn("/opt/backupsoft", group_vars)
         self.assertIn("package_url", group_vars)
         self.assertIn("skip_kweaver_data_views: \"{{ agent_content_vega_skip_kweaver_data_views | default(false) }}\"", group_vars)
@@ -51,6 +65,10 @@ class FoundationEndpointAndClientTests(unittest.TestCase):
         self.assertIn("mysql_package_filename", group_vars)
         self.assertIn("target_host", group_vars)
         self.assertIn("foundation.access_host", group_vars)
+        self.assertIn("((foundation_self_ip | default('', true)) or (foundation_access_host | default('', true)))", group_vars)
+        self.assertIn("foundation_client_server_ip | default((foundation.self_ip | default('', true)) or (foundation.access_host | default('', true))", group_vars)
+        self.assertIn("foundation_vega_host | default((foundation.self_ip | default('', true)) or (foundation.access_host | default('', true))", group_vars)
+        self.assertIn("foundation_opensearch_proxy_upstream_host | default((foundation.self_ip | default('', true)) or (foundation.access_host | default('', true))", group_vars)
         self.assertIn("default('sdba')", group_vars)
         self.assertIn("AGENT_CONTENT_FOUNDATION_VEGA_PASSWORD", group_vars)
         self.assertIn("    - kweaver", group_vars)

@@ -63,7 +63,7 @@ Inside `deploy-services`, the current script order is:
 8. Overlay `foundation-cli` into the KWeaver sandbox image.
 9. Prepare internal runtime networking.
 
-After `deploy-services` succeeds, the `full` profile must run `deploy-agent-content` before business services are released. The Agent content stage imports models, knowledge data, DataViews, BKNs, ContextLoader, skills, and Agents. The `app-services` stage then builds/imports business images from the Anybackup repository source and releases the five business services with Helm. Business image build defaults are derived from the full repository checkout: `anybackup_repo_root` defaults to `deploy/deploy_package/../..`, and `business_image_builds` must include `conversation-service`, `core-agent-service`, and `agent-web`. If this list is empty, the deployment should fail before Docker build with a clear source-root error rather than later during `agent-web` resolution.
+After `deploy-services` succeeds, the `full` profile must run `deploy-agent-content` before business services are released. The Agent content stage imports models, knowledge data, DataViews, BKNs, ContextLoader, skills, and Agents. The `app-services` stage releases the five business services with Helm. By default, customer deployments pull `conversation-service`, `core-agent-service`, and `agent-web` from the configured image registry instead of building them on the target host. The source-based `internal/build_import` path is retained for explicit development or release validation runs by setting `business_image_build_enabled_override=true`.
 
 Agent content can also be run separately with:
 
@@ -81,7 +81,7 @@ to LF on the target before execution.
 
 ### full
 
-The default end-to-end path. It installs or verifies Kubernetes, V9 infra, KWeaver Core, Foundation, FoundationClient, sandbox overlay, Agent content prerequisites, business images, business services, ingress, and verification.
+The default end-to-end path. It installs or verifies Kubernetes, V9 infra, KWeaver Core, Foundation, FoundationClient, sandbox overlay, Agent content prerequisites, business services, ingress, and verification. Business service images are pulled from the configured registry unless the source-build path is explicitly enabled.
 
 ### kweaver-core-only
 
@@ -136,7 +136,7 @@ Official install command template:
 The real package URL is:
 
 ```text
-https://ftp.anybackup.ai/FoundationServer-Linux_el7_x64-9.0.0.0-alpha1-20260430-release-zh_CN-3.tar.gz
+https://ftp.anybackup.ai/FoundationServer-Linux_el7_x64-9.0.0.0-alpha1-20260507-release-zh_CN-6.tar.gz
 ```
 
 By default the installer first searches `/opt/backupsoft/FoundationServer-Linux_el7_x64-9.0.0.0*.tar.gz`. If a matching FoundationServer package already exists there, it is reused. If no matching package exists, the installer downloads the package URL above into `/opt/backupsoft/<url-basename>`. Customers should not need to pass `--foundation-package-path` in the normal path. For validation, a predownloaded package may still be placed elsewhere and passed through `--foundation-package-path` as an escape hatch.

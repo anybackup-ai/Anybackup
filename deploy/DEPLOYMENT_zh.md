@@ -243,7 +243,7 @@ cd deploy
 6. 配置 KWeaver 模型。
 7. 导入知识库数据和数据连接。
 8. 部署 BKN、ContextLoader、skills 和 Agent。
-9. 构建并发布 Anybackup 业务服务。
+9. 发布 Anybackup 业务服务。默认从配置的镜像仓库拉取业务镜像。
 10. 发布 Web 访问入口。
 11. 执行部署后校验。
 

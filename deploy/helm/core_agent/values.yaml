@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: core-agent-service
+  repository: anybackup-v9-cn-beijing.cr.volces.com/anybackup-ai/svc/core-agent-service
   tag: latest
   pullPolicy: IfNotPresent
 

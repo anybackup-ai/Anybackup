@@ -1,7 +1,7 @@
 replicaCount: 2
 
 image:
-  repository: agent-web
+  repository: "{{ (v9_services_image_registry | length > 0) | ternary(v9_services_image_registry ~ '/', '') }}svc/agent-web"
   tag: "{{ v9_services_image_tag }}"
   pullPolicy: IfNotPresent
 

@@ -4,7 +4,7 @@
 
 ## 总体原则
 
-完整流程不是“部署 KWeaver 后导 BKN/Agent”。目标路径是：先准备 K8s 和基础组件，再部署 KWeaver、Foundation、FoundationClient、Etrino/Vega 可选能力和 sandbox，然后建立数据连接/DataView，再导入 BKN、ContextLoader、skills、Agent，最后构建并发布 5 个业务服务和唯一 web 入口，并在 AK/SK、数据库密码、模型凭证这些点上保持人工安全断点或 Secret 化。
+完整流程不是“部署 KWeaver 后导 BKN/Agent”。目标路径是：先准备 K8s 和基础组件，再部署 KWeaver、Foundation、FoundationClient、Etrino/Vega 可选能力和 sandbox，然后建立数据连接/DataView，再导入 BKN、ContextLoader、skills、Agent，最后发布 5 个业务服务和唯一 web 入口，并在 AK/SK、数据库密码、模型凭证这些点上保持人工安全断点或 Secret 化。
 
 敏感信息禁止写入代码、文档、values、命令示例或日志，包括密码、AK/SK、API key、KWeaver token、数据库凭证和模型凭证。
 
@@ -76,7 +76,7 @@ swr.cn-east-3.myhuaweicloud.com/kweaver-ai/dip/mf-model-api:0.6.0
 - 不存在才下载默认包：
 
 ```text
-https://ftp.anybackup.ai/FoundationServer-Linux_el7_x64-9.0.0.0-alpha1-20260430-release-zh_CN-3.tar.gz
+https://ftp.anybackup.ai/FoundationServer-Linux_el7_x64-9.0.0.0-alpha1-20260507-release-zh_CN-6.tar.gz
 ```
 
 - 只调用 Foundation 官方安装脚本，不修改 Foundation 包内容。
@@ -210,13 +210,14 @@ aio-pika>=9.5.0
 - 发布 Agent。
 - 使用 KWeaver CLI 的 Agent 能力做基础查询和必要 smoke。
 
-## 17. 构建并导入业务服务镜像
+## 17. 准备业务服务镜像
 
-- 从 AnyBackup 仓库源码构建，不从历史 images 目录拿。
-- 至少包括：
+- 默认从配置的镜像仓库拉取，不在客户环境构建。
+- 业务镜像至少包括：
   - `conversation-service`
   - `core-agent-service`
   - `agent-web`
+- 源码构建路径仅用于显式的开发或发布验证场景，通过 `business_image_build_enabled_override=true` 打开。
 - 第三方服务镜像包括 Keycloak/Traefik 等，要明确预拉取或导入策略。
 - 弱网环境要提前处理大镜像。
 

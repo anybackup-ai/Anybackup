@@ -1,8 +1,8 @@
 replicaCount: 1
 
 image:
-  registry: ""
-  repository: conversation-service
+  registry: "{{ v9_services_image_registry }}"
+  repository: svc/conversation-service
   tag: "{{ v9_services_image_tag }}"
   pullPolicy: IfNotPresent
 

@@ -1,5 +1,5 @@
 namespace: {{ deployment_namespace }}
-image: "{{ ((core_agent_service.image_registry | default(v9_services_image_registry)) | length > 0) | ternary((core_agent_service.image_registry | default(v9_services_image_registry)) ~ '/', '') }}{{ core_agent_service.name }}:{{ core_agent_service.image_tag }}"
+image: "{{ ((core_agent_service.image_registry | default(v9_services_image_registry)) | length > 0) | ternary((core_agent_service.image_registry | default(v9_services_image_registry)) ~ '/', '') }}{{ core_agent_service.image_repository | default(core_agent_service.name) }}:{{ core_agent_service.image_tag }}"
 imagePullPolicy: IfNotPresent
 replicas: {{ core_agent_service.replicas }}
 port: {{ core_agent_service.container_port }}

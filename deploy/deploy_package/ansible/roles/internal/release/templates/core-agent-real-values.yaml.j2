@@ -1,7 +1,7 @@
 replicaCount: {{ core_agent_service.replicas }}
 
 image:
-  repository: core-agent-service
+  repository: "{{ ((core_agent_service.image_registry | default(v9_services_image_registry) | default('')) | length > 0) | ternary((core_agent_service.image_registry | default(v9_services_image_registry)) ~ '/', '') }}{{ core_agent_service.image_repository | default('svc/core-agent-service') }}"
   tag: "{{ core_agent_service.image_tag }}"
   pullPolicy: IfNotPresent
 

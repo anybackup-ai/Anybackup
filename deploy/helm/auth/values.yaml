@@ -1,8 +1,8 @@
 keycloak:
   replicaCount: 1
   image:
-    registry: docker.aityp.com
-    repository: image/docker.io/keycloak/keycloak
+    registry: anybackup-v9-cn-beijing.cr.volces.com/anybackup-ai
+    repository: thirdparty/keycloak
     tag: 26.5.1
     pullPolicy: IfNotPresent
 
@@ -16,6 +16,15 @@ keycloak:
   realm:
     name: master
     accessTokenLifespan: 1800
+
+  realmConfig:
+    image:
+      registry: anybackup-v9-cn-beijing.cr.volces.com/anybackup-ai
+      repository: base/python
+      tag: 3.12-slim
+      pullPolicy: IfNotPresent
+    retries: 60
+    retrySleepSeconds: 5
 
   database:
     vendor: postgres

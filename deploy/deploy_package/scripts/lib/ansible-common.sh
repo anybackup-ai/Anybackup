@@ -41,10 +41,39 @@ ensure_ansible_playbook() {
     return 0
   fi
 
+  attempt_install_ansible_playbook || true
+
+  if command -v ansible-playbook >/dev/null 2>&1; then
+    return 0
+  fi
+
   cat >&2 <<'EOF'
-ERROR: ansible-playbook was not found in PATH.
+ERROR: ansible-playbook was not found in PATH after automatic install attempts.
 Install Ansible on the deployment controller first, or run this package on a Linux host where ansible-playbook is already available.
 EOF
+  return 1
+}
+
+attempt_install_ansible_playbook() {
+  echo "ansible-playbook was not found; trying to install Ansible automatically..." >&2
+
+  if command -v dnf >/dev/null 2>&1; then
+    dnf install -y ansible-core && return 0
+  fi
+
+  if command -v yum >/dev/null 2>&1; then
+    yum install -y ansible-core && return 0
+    yum install -y ansible && return 0
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update && apt-get install -y ansible && return 0
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -m pip install --user ansible && return 0
+  fi
+
   return 1
 }
 

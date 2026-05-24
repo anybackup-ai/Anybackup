@@ -1,0 +1,158 @@
+---
+- name: Resolve lazy tooling requirements
+  ansible.builtin.set_fact:
+    tooling_requires_docker: >-
+      {{
+        deployment_profile == "full"
+        and (
+          (business_image_build_enabled | default(false) | bool)
+          or (sandbox_overlay_enabled | default(true) | bool)
+        )
+      }}
+    tooling_requires_kweaver_cli: >-
+      {{
+        deployment_profile in ["full", "agent-content-only"]
+        and (kweaver_cli.enabled | default(true) | bool)
+      }}
+
+- name: Ensure curl is installed for deployment tooling
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if command -v curl >/dev/null 2>&1; then
+      exit 0
+    fi
+    if command -v dnf >/dev/null 2>&1; then
+      dnf install -y curl ca-certificates
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y curl ca-certificates
+    elif command -v apt-get >/dev/null 2>&1; then
+      apt-get update
+      apt-get install -y curl ca-certificates
+    else
+      echo "No supported package manager found for curl auto-install." >&2
+      exit 1
+    fi
+  args:
+    executable: /bin/bash
+  when:
+    - deployment_profile in ["full", "agent-content-only"]
+
+- name: Check Docker command when local image builds are enabled
+  ansible.builtin.command: which docker
+  register: tooling_docker_check
+  changed_when: false
+  failed_when: false
+  when: tooling_requires_docker | bool
+
+- name: Ensure Docker is installed when local image builds are enabled
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if command -v docker >/dev/null 2>&1; then
+      exit 0
+    fi
+
+    if command -v dnf >/dev/null 2>&1; then
+      dnf install -y docker || dnf install -y moby-engine || {
+        dnf install -y dnf-plugins-core curl ca-certificates
+        dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+        dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      }
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y docker || yum install -y moby-engine || {
+        yum install -y yum-utils curl ca-certificates
+        yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+        yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      }
+    elif command -v apt-get >/dev/null 2>&1; then
+      apt-get update
+      apt-get install -y docker.io
+    else
+      echo "No supported package manager found for Docker auto-install." >&2
+      exit 1
+    fi
+  args:
+    executable: /bin/bash
+  when:
+    - tooling_requires_docker | bool
+    - tooling_docker_check.rc | default(1) != 0
+
+- name: Ensure Docker service is running when local image builds are enabled
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl enable --now docker
+    elif command -v service >/dev/null 2>&1; then
+      service docker start
+    fi
+    docker version >/dev/null
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: tooling_requires_docker | bool
+
+- name: Check Node.js version for KWeaver CLIs
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if ! command -v node >/dev/null 2>&1; then
+      exit 1
+    fi
+    major="$(node -p 'process.versions.node.split(".")[0]')"
+    test "$major" -ge 22
+  args:
+    executable: /bin/bash
+  register: tooling_node_check
+  changed_when: false
+  failed_when: false
+  when: tooling_requires_kweaver_cli | bool
+
+- name: Install Node.js 22 when KWeaver CLIs need it
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if command -v dnf >/dev/null 2>&1; then
+      dnf install -y curl ca-certificates
+      curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+      dnf install -y nodejs
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y curl ca-certificates
+      curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+      yum install -y nodejs
+    elif command -v apt-get >/dev/null 2>&1; then
+      apt-get update
+      apt-get install -y curl ca-certificates gnupg
+      curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+      apt-get update
+      apt-get install -y nodejs
+    else
+      echo "No supported package manager found for Node.js auto-install." >&2
+      exit 1
+    fi
+    major="$(node -p 'process.versions.node.split(".")[0]')"
+    test "$major" -ge 22
+  args:
+    executable: /bin/bash
+  when:
+    - tooling_requires_kweaver_cli | bool
+    - tooling_node_check.rc | default(1) != 0
+
+- name: Check KWeaver CLI commands
+  ansible.builtin.shell: |
+    set -euo pipefail
+    command -v kweaver >/dev/null 2>&1
+    command -v kweaver-admin >/dev/null 2>&1
+  args:
+    executable: /bin/bash
+  register: tooling_kweaver_cli_check
+  changed_when: false
+  failed_when: false
+  when: tooling_requires_kweaver_cli | bool
+
+- name: Install KWeaver CLI tools when missing
+  ansible.builtin.shell: |
+    set -euo pipefail
+    npm install -g @kweaver-ai/kweaver-sdk
+    npm install -g @kweaver-ai/kweaver-admin
+  args:
+    executable: /bin/bash
+  when:
+    - tooling_requires_kweaver_cli | bool
+    - tooling_kweaver_cli_check.rc | default(1) != 0

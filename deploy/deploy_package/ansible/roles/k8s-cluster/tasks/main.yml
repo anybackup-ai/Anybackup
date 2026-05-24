@@ -21,15 +21,201 @@
       - "Existing nodes: {{ k8s_cluster_nodes_before.stdout_lines | default([]) | join(', ') if k8s_cluster_present_before else 'none' }}"
   when: k8s_cluster_present_before
 
-- name: Stop when Kubernetes is absent and no bootstrap command is configured
-  ansible.builtin.assert:
-    that:
-      - k8s_cluster.bootstrap_command | default('') | length > 0
-    fail_msg: >-
-      Kubernetes is not usable on the target host, and k8s_cluster.bootstrap_command
-      is empty. Configure k8s_cluster_bootstrap_command for this OS/environment, or
-      bootstrap Kubernetes manually before running the integrated deployment.
-  when: not k8s_cluster_present_before
+- name: Ensure KWeaver source parent exists for official Kubernetes bootstrap
+  ansible.builtin.file:
+    path: "{{ kweaver_online.repo_dir | dirname }}"
+    state: directory
+    mode: "0755"
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Check KWeaver source for official Kubernetes bootstrap
+  ansible.builtin.stat:
+    path: "{{ kweaver_online.repo_dir }}/.git"
+  register: k8s_cluster_kweaver_repo_git_dir
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Clone KWeaver Core source for official Kubernetes bootstrap when absent
+  ansible.builtin.command:
+    argv:
+      - git
+      - clone
+      - "{{ kweaver_online.repo_url }}"
+      - "{{ kweaver_online.repo_dir }}"
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+    - not ((k8s_cluster_kweaver_repo_git_dir.stat.exists | default(false)) | bool)
+
+- name: Fetch KWeaver source refs for official Kubernetes bootstrap
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ kweaver_online.repo_dir }}"
+      - fetch
+      - --prune
+      - --tags
+      - origin
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Check out KWeaver Core release ref for official Kubernetes bootstrap
+  ansible.builtin.shell: |
+    set -euo pipefail
+    for ref in {{ ([kweaver_online.git_ref, 'release/' ~ kweaver_online.version, 'v' ~ kweaver_online.version, kweaver_online.version]) | map('quote') | join(' ') }}; do
+      [ -n "${ref}" ] || continue
+      if git -C {{ kweaver_online.repo_dir | quote }} rev-parse --verify --quiet "origin/${ref}^{commit}" >/dev/null; then
+        git -C {{ kweaver_online.repo_dir | quote }} checkout --force -B "deploy-{{ kweaver_online.version }}" "origin/${ref}"
+        exit 0
+      fi
+      if git -C {{ kweaver_online.repo_dir | quote }} rev-parse --verify --quiet "${ref}^{commit}" >/dev/null; then
+        git -C {{ kweaver_online.repo_dir | quote }} checkout --force "${ref}"
+        exit 0
+      fi
+    done
+    echo "Unable to find KWeaver Core source ref for Kubernetes bootstrap." >&2
+    exit 1
+  args:
+    executable: /bin/bash
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Ensure official KWeaver deploy.sh is executable for Kubernetes bootstrap
+  ansible.builtin.file:
+    path: "{{ kweaver_online.deploy_dir }}/deploy.sh"
+    mode: "0755"
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Clean partial Kubernetes bootstrap state before KWeaver official installer when absent
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if command -v kubeadm >/dev/null 2>&1; then
+      kubeadm reset -f || true
+    fi
+    rm -rf \
+      /etc/kubernetes \
+      /var/lib/etcd \
+      /var/lib/kubelet \
+      /var/lib/cni \
+      /etc/cni/net.d \
+      /run/flannel \
+      /root/.kube
+    ip link delete cni0 2>/dev/null || true
+    ip link delete flannel.1 2>/dev/null || true
+    if command -v iptables-save >/dev/null 2>&1 && command -v iptables-restore >/dev/null 2>&1; then
+      iptables-save | grep -v -E 'KUBE|CNI|FLANNEL' | iptables-restore || true
+    fi
+  args:
+    executable: /bin/bash
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Align Kubernetes yum repo for KWeaver official installer when absent
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+      mkdir -p /etc/yum.repos.d
+      cat > /etc/yum.repos.d/kubernetes.repo <<EOF
+    [kubernetes]
+    name=Kubernetes (Aliyun mirror)
+    baseurl={{ k8s_cluster.official_installer.rpm_repo_baseurl }}
+    enabled=1
+    gpgcheck=1
+    gpgkey={{ k8s_cluster.official_installer.rpm_repo_gpgkey }}
+    EOF
+      if command -v dnf >/dev/null 2>&1; then
+        dnf clean metadata
+        dnf makecache --disablerepo='*' --enablerepo=kubernetes
+      else
+        yum clean metadata
+        yum makecache --disablerepo='*' --enablerepo=kubernetes
+      fi
+    fi
+  args:
+    executable: /bin/bash
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Align Docker CE yum repo before KWeaver official installer when absent
+  ansible.builtin.shell: |
+    set -euo pipefail
+    repo="/etc/yum.repos.d/docker-ce.repo"
+    mirror='{{ k8s_cluster.official_installer.docker_ce_repo_mirror_baseurl }}'
+    changed=false
+
+    if [[ -f "$repo" ]] && grep -q 'download.docker.com/linux/centos' "$repo"; then
+      cp -a "$repo" "${repo}.anybackup.bak" 2>/dev/null || true
+      sed -i -E "s#^baseurl=https?://download\\.docker\\.com/linux/centos/.+#baseurl=${mirror}#g" "$repo"
+      changed=true
+    fi
+
+    if [[ "$changed" == "true" ]]; then
+      echo changed
+    else
+      echo unchanged
+    fi
+  args:
+    executable: /bin/bash
+  register: k8s_cluster_docker_ce_repo_align
+  changed_when: "'changed' in (k8s_cluster_docker_ce_repo_align.stdout | default(''))"
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
+
+- name: Remove Kubernetes packages outside KWeaver official minor when absent
+  ansible.builtin.shell: |
+    set -euo pipefail
+    desired_prefix="{{ k8s_cluster.official_installer.package_version_prefix }}"
+    mismatch=false
+
+    if command -v rpm >/dev/null 2>&1; then
+      for pkg in kubeadm kubelet kubectl kubernetes-cni; do
+        if ! rpm -q "$pkg" >/dev/null 2>&1; then
+          continue
+        fi
+        version="$(rpm -q --qf '%{VERSION}' "$pkg")"
+        if [[ -n "$version" && "$version" != "$desired_prefix"* ]]; then
+          echo "$pkg version $version does not match $desired_prefix"
+          mismatch=true
+        fi
+      done
+      if [[ "$mismatch" == "true" ]]; then
+        if command -v dnf >/dev/null 2>&1; then
+          dnf remove -y kubeadm kubelet kubectl kubernetes-cni cri-tools || true
+        else
+          yum remove -y kubeadm kubelet kubectl kubernetes-cni cri-tools || true
+        fi
+      fi
+    elif command -v dpkg-query >/dev/null 2>&1; then
+      for pkg in kubeadm kubelet kubectl kubernetes-cni; do
+        if ! dpkg-query -W "$pkg" >/dev/null 2>&1; then
+          continue
+        fi
+        version="$(dpkg-query -W -f='${Version}' "$pkg")"
+        if [[ -n "$version" && "$version" != "$desired_prefix"* ]]; then
+          echo "$pkg version $version does not match $desired_prefix"
+          mismatch=true
+        fi
+      done
+      if [[ "$mismatch" == "true" ]]; then
+        apt-get remove -y kubeadm kubelet kubectl kubernetes-cni cri-tools || true
+      fi
+    fi
+  args:
+    executable: /bin/bash
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
 
 - name: Bootstrap Kubernetes when absent and explicitly configured
   ansible.builtin.shell: "{{ k8s_cluster.bootstrap_command }}"
@@ -38,6 +224,27 @@
   when:
     - not k8s_cluster_present_before
     - k8s_cluster.bootstrap_command | default('') | length > 0
+
+- name: Bootstrap Kubernetes with KWeaver official k8s installer when absent
+  ansible.builtin.command:
+    argv:
+      - ./deploy.sh
+      - k8s
+      - install
+  args:
+    chdir: "{{ kweaver_online.deploy_dir }}"
+  environment:
+    INGRESS_NGINX_HOSTNETWORK: "false"
+    INGRESS_NGINX_CLASS: "{{ ingress.class }}"
+    INGRESS_NGINX_HTTP_PORT: "{{ ingress.managed_nodeport.http_node_port | string }}"
+    INGRESS_NGINX_HTTPS_PORT: "{{ ingress.managed_nodeport.https_node_port | string }}"
+    AUTO_INSTALL_INGRESS_NGINX: "true"
+    IMAGE_REGISTRY: "{{ kweaver.image_registry }}"
+    K8S_RPM_REPO_BASEURL: "{{ k8s_cluster.official_installer.rpm_repo_baseurl }}"
+    K8S_RPM_REPO_GPGKEY: "{{ k8s_cluster.official_installer.rpm_repo_gpgkey }}"
+  when:
+    - not k8s_cluster_present_before
+    - k8s_cluster.bootstrap_command | default('') | length == 0
 
 - name: Verify Kubernetes cluster after bootstrap or reuse
   ansible.builtin.command:
@@ -63,3 +270,320 @@
 - name: Print Kubernetes cluster summary
   ansible.builtin.debug:
     msg: "{{ k8s_cluster_nodes_after.stdout_lines }}"
+
+- name: Check local-path StorageClass exists
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - get
+      - storageclass
+      - "{{ k8s_cluster.local_path.storage_class | default(v9_infra.default_storage_class | default('local-path')) }}"
+  register: k8s_cluster_local_path_storageclass
+  changed_when: false
+  failed_when: false
+  when: k8s_cluster.local_path.enabled | default(true) | bool
+
+- name: Install local-path provisioner when StorageClass is missing
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - apply
+      - -f
+      - "{{ k8s_cluster.local_path.manifest_url }}"
+  register: k8s_cluster_local_path_apply
+  changed_when: "'created' in (k8s_cluster_local_path_apply.stdout | default('')) or 'configured' in (k8s_cluster_local_path_apply.stdout | default(''))"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster_local_path_storageclass.rc | default(1) != 0
+
+- name: Check local-path provisioner deployment exists
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - get
+      - deployment
+      - "{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+  register: k8s_cluster_local_path_deployment_check
+  changed_when: false
+  failed_when: false
+  when: k8s_cluster.local_path.enabled | default(true) | bool
+
+- name: Check local-path provisioner availability
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - get
+      - deployment
+      - "{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+      - -o
+      - "jsonpath={.status.availableReplicas}"
+  register: k8s_cluster_local_path_available
+  changed_when: false
+  failed_when: false
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+
+- name: Use primary local-path provisioner image
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - set
+      - image
+      - "deployment/{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+      - "local-path-provisioner={{ k8s_cluster.local_path.primary_image }}"
+  register: k8s_cluster_local_path_primary_image
+  changed_when: "'image updated' in (k8s_cluster_local_path_primary_image.stdout | default(''))"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.primary_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+    - k8s_cluster_local_path_available.stdout | default('0') | int < 1
+
+- name: Wait for local-path provisioner rollout with primary image
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - rollout
+      - status
+      - "deployment/{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+      - "--timeout={{ k8s_cluster.local_path.rollout_timeout | default('180s') }}"
+  register: k8s_cluster_local_path_primary_rollout
+  changed_when: false
+  failed_when: false
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+    - k8s_cluster_local_path_available.stdout | default('0') | int < 1
+
+- name: Check local-path fallback image endpoint before switching image
+  ansible.builtin.shell: |
+    set -euo pipefail
+    status="$(curl -k -sS -o /dev/null -w '%{http_code}' -I --connect-timeout 8 --max-time 20 "{{ k8s_cluster.local_path.fallback_registry_url }}")"
+    case "$status" in
+      200|401|403) exit 0 ;;
+      *) echo "Unexpected HTTP status from {{ k8s_cluster.local_path.fallback_registry_url }}: $status" >&2; exit 1 ;;
+    esac
+  args:
+    executable: /bin/bash
+  register: k8s_cluster_local_path_fallback_registry
+  changed_when: false
+  failed_when: false
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.fallback_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+    - k8s_cluster_local_path_available.stdout | default('0') | int < 1
+    - k8s_cluster_local_path_primary_rollout.rc | default(0) != 0
+
+- name: Pull fallback local-path provisioner image before switching
+  ansible.builtin.shell: |
+    set -euo pipefail
+    image="{{ k8s_cluster.local_path.fallback_image }}"
+    if command -v ctr >/dev/null 2>&1; then
+      timeout 300 ctr -n k8s.io images pull "$image"
+    elif command -v crictl >/dev/null 2>&1; then
+      timeout 300 crictl pull "$image"
+    elif command -v docker >/dev/null 2>&1; then
+      timeout 300 docker pull "$image"
+    else
+      echo "No ctr, crictl, or docker command is available to pre-pull $image; Kubernetes will pull it during rollout."
+    fi
+  args:
+    executable: /bin/bash
+  register: k8s_cluster_local_path_fallback_pull
+  changed_when: true
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.fallback_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+    - k8s_cluster_local_path_available.stdout | default('0') | int < 1
+    - k8s_cluster_local_path_primary_rollout.rc | default(0) != 0
+    - k8s_cluster_local_path_fallback_registry.rc | default(1) == 0
+
+- name: Stop when local-path fallback registry is unreachable
+  ansible.builtin.assert:
+    that:
+      - k8s_cluster_local_path_fallback_registry.rc == 0
+    fail_msg: >-
+      local-path provisioner primary image failed to become ready, and fallback
+      registry {{ k8s_cluster.local_path.fallback_registry_url }} is unreachable.
+      Fix image registry access or set k8s_cluster_local_path_fallback_image to
+      an accessible mirror, then rerun the installer.
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.fallback_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+    - k8s_cluster_local_path_available.stdout | default('0') | int < 1
+    - k8s_cluster_local_path_primary_rollout.rc | default(0) != 0
+
+- name: Use fallback local-path provisioner image
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - set
+      - image
+      - "deployment/{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+      - "local-path-provisioner={{ k8s_cluster.local_path.fallback_image }}"
+  register: k8s_cluster_local_path_fallback_image
+  changed_when: "'image updated' in (k8s_cluster_local_path_fallback_image.stdout | default(''))"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.fallback_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+    - k8s_cluster_local_path_available.stdout | default('0') | int < 1
+    - k8s_cluster_local_path_primary_rollout.rc | default(0) != 0
+    - k8s_cluster_local_path_fallback_registry.rc | default(1) == 0
+
+- name: Wait for local-path provisioner rollout with fallback image
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - rollout
+      - status
+      - "deployment/{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+      - "--timeout={{ k8s_cluster.local_path.rollout_timeout | default('180s') }}"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.fallback_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+    - k8s_cluster_local_path_available.stdout | default('0') | int < 1
+    - k8s_cluster_local_path_primary_rollout.rc | default(0) != 0
+    - k8s_cluster_local_path_fallback_registry.rc | default(1) == 0
+
+- name: Pull local-path helper image before PVC provisioning
+  ansible.builtin.shell: |
+    set -euo pipefail
+    image="{{ k8s_cluster.local_path.helper_image }}"
+    if command -v ctr >/dev/null 2>&1; then
+      timeout 300 ctr -n k8s.io images pull "$image"
+    elif command -v crictl >/dev/null 2>&1; then
+      timeout 300 crictl pull "$image"
+    elif command -v docker >/dev/null 2>&1; then
+      timeout 300 docker pull "$image"
+    else
+      echo "No ctr, crictl, or docker command is available to pre-pull $image; Kubernetes will pull it during PVC provisioning."
+    fi
+  args:
+    executable: /bin/bash
+  register: k8s_cluster_local_path_helper_pull
+  changed_when: true
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.helper_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+
+- name: Configure local-path helper pod image
+  ansible.builtin.shell: |
+    set -euo pipefail
+    python3 - <<'PY'
+    import json
+    import os
+    import re
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    namespace = os.environ["LOCAL_PATH_NAMESPACE"]
+    configmap = os.environ["LOCAL_PATH_CONFIGMAP"]
+    image = os.environ["LOCAL_PATH_HELPER_IMAGE"]
+
+    raw = subprocess.check_output(
+        ["kubectl", "-n", namespace, "get", "cm", configmap, "-o", "json"],
+        text=True,
+    )
+    data = json.loads(raw)
+    helper = data["data"].get("helperPod.yaml", "")
+    if f"image: {image}" in helper:
+        print("unchanged")
+        sys.exit(0)
+
+    updated = re.sub(r"(?m)^(\s*image:\s*).*$", rf"\1{image}", helper, count=1)
+    if updated == helper:
+        raise SystemExit(f"helperPod.yaml in {configmap} has no image field")
+
+    data["data"]["helperPod.yaml"] = updated
+    for field in ["creationTimestamp", "managedFields", "resourceVersion", "uid"]:
+        data["metadata"].pop(field, None)
+
+    path = Path("/tmp/local-path-config.json")
+    path.write_text(json.dumps(data, ensure_ascii=False))
+    subprocess.check_call(["kubectl", "apply", "-f", str(path)])
+    print("changed")
+    PY
+  args:
+    executable: /bin/bash
+  environment:
+    LOCAL_PATH_NAMESPACE: "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+    LOCAL_PATH_CONFIGMAP: "{{ k8s_cluster.local_path.helper_configmap | default('local-path-config') }}"
+    LOCAL_PATH_HELPER_IMAGE: "{{ k8s_cluster.local_path.helper_image }}"
+  register: k8s_cluster_local_path_helper_config
+  changed_when: "'changed' in (k8s_cluster_local_path_helper_config.stdout | default(''))"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.helper_image | default('') | length > 0
+    - k8s_cluster_local_path_deployment_check.rc | default(1) == 0
+
+- name: Restart local-path provisioner after helper image change
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - rollout
+      - restart
+      - "deployment/{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster_local_path_helper_config is changed
+
+- name: Wait for local-path provisioner rollout after helper image change
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ k8s_cluster.local_path.namespace | default('local-path-storage') }}"
+      - rollout
+      - status
+      - "deployment/{{ k8s_cluster.local_path.deployment | default('local-path-provisioner') }}"
+      - "--timeout={{ k8s_cluster.local_path.rollout_timeout | default('180s') }}"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster_local_path_helper_config is changed
+
+- name: Mark local-path StorageClass as default when requested
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - patch
+      - storageclass
+      - "{{ k8s_cluster.local_path.storage_class | default(v9_infra.default_storage_class | default('local-path')) }}"
+      - -p
+      - '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+  register: k8s_cluster_local_path_default_patch
+  changed_when: "'patched' in (k8s_cluster_local_path_default_patch.stdout | default(''))"
+  when:
+    - k8s_cluster.local_path.enabled | default(true) | bool
+    - k8s_cluster.local_path.make_default | default(true) | bool
+
+- name: Verify local-path StorageClass is available
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - get
+      - storageclass
+      - "{{ k8s_cluster.local_path.storage_class | default(v9_infra.default_storage_class | default('local-path')) }}"
+  changed_when: false
+  when: k8s_cluster.local_path.enabled | default(true) | bool

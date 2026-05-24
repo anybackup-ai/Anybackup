@@ -169,6 +169,6 @@ small-model/small-model-adapter.txt.template
 
 ## 关于模型 ID
 
-用户不需要填写 KWeaver 生成的模型 ID。按模板填写模型名称、接口地址、供应商模型名和凭证来源即可。
+客户不需要填写 KWeaver 生成的模型 ID。按模板填写模型名称、接口地址、供应商模型名和凭证来源即可。
 
 一句话：用户部署前先把 `models.json.template` 复制成 `models.json`，填好模型信息和凭证来源，然后再执行一体化部署脚本。
