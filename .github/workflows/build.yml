@@ -1,0 +1,74 @@
+name: Build Verification
+
+on:
+  push:
+    branches: [main, "ci/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-core-agent:
+    name: Build core-agent-service
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        working-directory: ./Agent/service/core_agent
+        run: pip install -e .
+
+      - name: Verify core-agent builds
+        working-directory: ./Agent/service/core_agent
+        run: |
+          python -c "from core_agent_service import main; print('core-agent-service import OK')"
+
+  build-conversation-service:
+    name: Build conversation-service
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        working-directory: ./Agent/service/conversation
+        run: pip install -e .
+
+      - name: Verify conversation-service builds
+        working-directory: ./Agent/service/conversation
+        run: |
+          python -c "from app.main import app; print('conversation-service import OK')"
+
+  build-deploy-orchestrator:
+    name: Build deploy-orchestrator
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        working-directory: ./deploy/deploy_package/agent-content/deploy-orchestrator
+        run: pip install -e .
+
+      - name: Verify deploy-orchestrator builds
+        working-directory: ./deploy/deploy_package/agent-content/deploy-orchestrator
+        run: |
+          python -c "from deploy_orchestrator import main; print('deploy-orchestrator import OK')"
