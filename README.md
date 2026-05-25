@@ -81,6 +81,7 @@ Describe a workload and Anybackup Agent turns the request into comparable backup
 
 ### Recovery Plan Generation
 
+
 Describe a MySQL failure and the Agent turns it into a structured recovery plan. The plan identifies recovery scope, target point, execution path, and the risk of overwriting or rolling back data.
 
 ### Human-Controlled Execution
